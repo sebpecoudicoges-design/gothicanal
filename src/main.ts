@@ -1,43 +1,83 @@
 import './style.css'
-import typescriptLogo from './assets/typescript.svg'
-import viteLogo from './assets/vite.svg'
-import heroImg from './assets/hero.png'
-import { setupCounter } from './counter.ts'
-import { supabase } from './lib/supabase'
 
-document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
-<section id="center">
-  <div class="hero">
-    <img src="${heroImg}" class="base" width="170" height="179">
-    <img src="${typescriptLogo}" class="framework" alt="TypeScript logo"/>
-    <img src=${viteLogo} class="vite" alt="Vite logo" />
-  </div>
-  <div>
-    <h1>Get started</h1>
-    <p>Edit <code>src/main.ts</code> and save to test <code>HMR</code></p>
-  </div>
-  <button id="counter" type="button" class="counter"></button>
-</section>
+const app = document.querySelector<HTMLDivElement>('#app')
 
-<div class="ticks"></div>
-
-<section id="next-steps">
-  <div id="docs">
-    <h2>Documentation</h2>
-  </div>
-</section>
-`
-
-setupCounter(document.querySelector<HTMLButtonElement>('#counter')!)
-
-// ✅ TEST SUPABASE
-async function testSupabase() {
-  const { data, error } = await supabase
-    .from('test_connection')
-    .select('*')
-
-  console.log('SUPABASE DATA:', data)
-  console.log('SUPABASE ERROR:', error)
+if (!app) {
+  throw new Error('App container not found')
 }
 
-testSupabase()
+app.innerHTML = `
+  <main class="page-shell">
+    <section class="hero-banner" aria-label="Bandeau GothiCanal">
+      <img src="/gothicanal-banner.jpg" alt="Bandeau GothiCanal avec logo, portrait punk et palmier" />
+      <div class="hero-overlay"></div>
+    </section>
+
+    <section class="hero-copy section section-intro">
+      <p class="eyebrow">Gothicanal.com</p>
+      <h1>Le canal gothique, solaire et décalé.</h1>
+      <p class="lead">
+        Une première page d'accueil pour poser l'univers : une identité visuelle forte,
+        une base propre sur Vite, Netlify et Supabase, et un site prêt à évoluer.
+      </p>
+      <div class="hero-actions">
+        <a class="button button-primary" href="#univers">Découvrir l'univers</a>
+        <a class="button button-secondary" href="#prochainement">Voir la suite</a>
+      </div>
+    </section>
+
+    <section id="univers" class="section content-grid">
+      <article class="panel panel-featured">
+        <p class="panel-kicker">Direction artistique</p>
+        <h2>Une ambiance gothique qui ne se prend pas pour un musée.</h2>
+        <p>
+          Le bandeau devient la pièce centrale du site : rouge saturé, silhouette punk,
+          énergie frontale, et un contraste volontairement pop avec le palmier.
+        </p>
+      </article>
+
+      <article class="panel">
+        <p class="panel-kicker">Base technique</p>
+        <h3>Stack déjà en place</h3>
+        <ul>
+          <li>Vite + TypeScript pour le front</li>
+          <li>Supabase prêt pour la donnée et l'auth</li>
+          <li>Netlify prêt pour le déploiement</li>
+        </ul>
+      </article>
+
+      <article class="panel">
+        <p class="panel-kicker">Intention</p>
+        <h3>Landing page claire</h3>
+        <p>
+          Cette première version sert de socle : visuel principal, ton éditorial,
+          sections réutilisables et structure simple à enrichir ensuite.
+        </p>
+      </article>
+    </section>
+
+    <section id="prochainement" class="section roadmap">
+      <div class="roadmap-header">
+        <p class="eyebrow">Prochainement</p>
+        <h2>Ce qu'on pourra brancher ensuite</h2>
+      </div>
+      <div class="roadmap-grid">
+        <article class="roadmap-card">
+          <span>01</span>
+          <h3>Pages éditoriales</h3>
+          <p>Accueil, manifeste, galerie, événements, contact.</p>
+        </article>
+        <article class="roadmap-card">
+          <span>02</span>
+          <h3>Back-office léger</h3>
+          <p>Contenus dynamiques, formulaire, mailing ou actualités.</p>
+        </article>
+        <article class="roadmap-card">
+          <span>03</span>
+          <h3>Version production</h3>
+          <p>Nom de domaine final, DNS propre, SSL validé et contenu réel.</p>
+        </article>
+      </div>
+    </section>
+  </main>
+`
