@@ -21,31 +21,73 @@ let currentCategory = 'all'
 let isUploading = false
 
 const app = document.querySelector<HTMLDivElement>('#app')
-
-if (!app) {
-  throw new Error('App root not found')
-}
+if (!app) throw new Error('App root not found')
 
 app.innerHTML = `
   <main class="site-shell">
-    <section class="hero-banner">
-      <img src="/gothicanal-banner.jpg" alt="Bandeau GothiCanal" class="hero-banner__image" />
-      <div class="hero-banner__veil"></div>
-      <div class="hero-banner__content reveal-up">
-        <span class="eyebrow">GothiCanal</span>
-        <h1>Archives mouvantes, visions nocturnes et fragments à revoir.</h1>
-        <p>
-          Un répertoire vidéo à l’esthétique feutrée, pensé pour classer, retrouver et revoir ce qui mérite un second regard.
-        </p>
-        <div class="hero-banner__chips">
-          <span>Ambiance implicite</span>
-          <span>Répertoire vidéo</span>
-          <span>Lecture instantanée</span>
+    <header class="topbar">
+      <div class="topbar__inner">
+        <a href="#top" class="brandmark" aria-label="GothiCanal">
+          <span class="brandmark__dot"></span>
+          <span class="brandmark__text">GothiCanal</span>
+        </a>
+        <nav class="topnav">
+          <a href="#archive">Archive</a>
+          <a href="#upload">Déposer</a>
+          <a href="#player">Visionner</a>
+        </nav>
+      </div>
+    </header>
+
+    <section class="hero-v3" id="top">
+      <div class="hero-v3__backdrop"></div>
+      <div class="hero-v3__grain"></div>
+      <div class="hero-v3__spotlight"></div>
+      <div class="hero-v3__container">
+        <div class="hero-v3__copy reveal-up">
+          <span class="eyebrow">Répertoire privé d'images en mouvement</span>
+          <h1>Collectionne, retrouve et rejoue les séquences qui suggèrent plus qu’elles ne disent.</h1>
+          <p>
+            Un lieu pensé pour trier des fragments, classer des ambiances et laisser parler l’esthétique sans jamais tout expliquer.
+          </p>
+          <div class="hero-v3__actions">
+            <a class="primary-link" href="#archive">Explorer l’archive</a>
+            <a class="secondary-link" href="#upload">Ajouter une séquence</a>
+          </div>
+          <div class="hero-v3__stats">
+            <div class="stat-card">
+              <span class="stat-card__value" id="heroCount">0</span>
+              <span class="stat-card__label">séquences rangées</span>
+            </div>
+            <div class="stat-card">
+              <span class="stat-card__value">6</span>
+              <span class="stat-card__label">catégories d’ambiance</span>
+            </div>
+            <div class="stat-card">
+              <span class="stat-card__value">∞</span>
+              <span class="stat-card__label">relectures possibles</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="hero-v3__visual reveal-up reveal-delay-1">
+          <div class="hero-v3__frame">
+            <img src="/gothicanal-banner.jpg" alt="Bandeau GothiCanal" class="hero-v3__image" />
+          </div>
         </div>
       </div>
     </section>
 
-    <section class="toolbar reveal-up reveal-delay-1">
+    <section class="tease-band reveal-up reveal-delay-2">
+      <div class="tease-band__inner">
+        <span>Velours sombre</span>
+        <span>Présences obliques</span>
+        <span>Archives nocturnes</span>
+        <span>Fragments à revoir</span>
+      </div>
+    </section>
+
+    <section class="toolbar reveal-up reveal-delay-2" id="archive">
       <div class="toolbar__search">
         <label for="searchInput">Recherche</label>
         <input id="searchInput" type="search" placeholder="Titre, description ou catégorie" autocomplete="off" />
@@ -61,17 +103,17 @@ app.innerHTML = `
     </section>
 
     <section class="layout-grid">
-      <aside class="panel panel--sticky reveal-up reveal-delay-2">
-        <div class="panel__header">
+      <aside class="panel panel--sticky reveal-up reveal-delay-2" id="upload">
+        <div class="panel__header panel__header--premium">
           <span class="panel__kicker">Dépôt</span>
-          <h2>Ajouter une vidéo</h2>
-          <p>Dépose un fichier, choisis une catégorie et renseigne le minimum utile.</p>
+          <h2>Déposer une nouvelle séquence</h2>
+          <p>Renseigne l’essentiel. Le reste pourra rester entre les lignes.</p>
         </div>
 
         <form id="uploadForm" class="upload-form">
           <div class="field">
             <label for="videoTitle">Titre</label>
-            <input id="videoTitle" name="title" type="text" maxlength="120" required placeholder="Ex. Mouvement en velours" />
+            <input id="videoTitle" name="title" type="text" maxlength="120" required placeholder="Ex. Théâtre de minuit" />
           </div>
 
           <div class="field">
@@ -83,13 +125,13 @@ app.innerHTML = `
 
           <div class="field">
             <label for="videoDescription">Description</label>
-            <textarea id="videoDescription" name="description" rows="4" maxlength="500" placeholder="Quelques lignes, sans trop en dire."></textarea>
+            <textarea id="videoDescription" name="description" rows="4" maxlength="500" placeholder="Quelques lignes, en gardant le mystère intact."></textarea>
           </div>
 
           <div class="field">
             <label for="videoFile">Fichier vidéo</label>
             <input id="videoFile" name="file" type="file" accept="video/*" required />
-            <small>MP4 conseillé. Le stockage passe par Supabase Storage.</small>
+            <small>Format MP4 conseillé. Hébergement via Supabase Storage.</small>
           </div>
 
           <button id="uploadButton" class="primary-button" type="submit">Publier dans l’archive</button>
@@ -98,12 +140,15 @@ app.innerHTML = `
       </aside>
 
       <section class="content-column">
-        <article class="panel player-panel reveal-up reveal-delay-2">
-          <div class="panel__header">
-            <span class="panel__kicker">Lecture</span>
-            <h2 id="playerTitle">Aucune sélection</h2>
-            <p id="playerMeta">Choisis une vidéo dans l’archive pour lancer la lecture.</p>
+        <article class="panel player-panel reveal-up reveal-delay-2" id="player">
+          <div class="panel__header panel__header--inline panel__header--premium">
+            <div>
+              <span class="panel__kicker">Lecture</span>
+              <h2 id="playerTitle">Aucune sélection</h2>
+            </div>
+            <span id="resultsCount" class="results-pill">0 vidéo</span>
           </div>
+          <p id="playerMeta" class="player-meta">Choisis une vidéo dans l’archive pour lancer la lecture.</p>
 
           <div class="player-frame" id="playerFrame">
             <div class="player-frame__empty">
@@ -114,12 +159,10 @@ app.innerHTML = `
         </article>
 
         <article class="panel reveal-up reveal-delay-3">
-          <div class="panel__header panel__header--inline">
-            <div>
-              <span class="panel__kicker">Archive</span>
-              <h2>Répertoire vidéo</h2>
-            </div>
-            <span id="resultsCount" class="results-pill">0 vidéo</span>
+          <div class="panel__header panel__header--premium">
+            <span class="panel__kicker">Archive</span>
+            <h2>Répertoire vidéo</h2>
+            <p>Recherche rapide, tri par catégorie, lecture instantanée.</p>
           </div>
           <div id="videoList" class="video-grid"></div>
         </article>
@@ -140,6 +183,7 @@ const playerTitle = document.querySelector<HTMLHeadingElement>('#playerTitle')
 const playerMeta = document.querySelector<HTMLParagraphElement>('#playerMeta')
 const playerDescription = document.querySelector<HTMLParagraphElement>('#playerDescription')
 const playerFrame = document.querySelector<HTMLDivElement>('#playerFrame')
+const heroCount = document.querySelector<HTMLSpanElement>('#heroCount')
 
 function escapeHtml(value: string) {
   return value
@@ -207,10 +251,11 @@ function renderPlayer() {
 }
 
 function renderList() {
-  if (!videoList || !resultsCount) return
+  if (!videoList || !resultsCount || !heroCount) return
 
   const filtered = getFilteredVideos()
   resultsCount.textContent = `${filtered.length} vidéo${filtered.length > 1 ? 's' : ''}`
+  heroCount.textContent = String(videos.length)
 
   if (!filtered.length) {
     videoList.innerHTML = `
@@ -239,12 +284,12 @@ function renderList() {
     })
     .join('')
 
-  videoList.querySelectorAll<HTMLButtonElement>('[data-video-id]').forEach((button) => {
+  videoList.querySelectorAll<HTMLButtonElement>('.video-card').forEach((button) => {
     button.addEventListener('click', () => {
       activeVideoId = button.dataset.videoId ?? null
       renderPlayer()
       renderList()
-      document.querySelector('.player-panel')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+      document.querySelector('#player')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
     })
   })
 }
@@ -261,103 +306,94 @@ async function loadVideos() {
       videoList.innerHTML = `
         <div class="empty-state empty-state--error">
           <h3>Archive indisponible</h3>
-          <p>La table <code>videos</code> ou le bucket <code>${BUCKET}</code> n’est probablement pas encore initialisé.</p>
+          <p>Impossible de charger les vidéos pour l’instant.</p>
         </div>
       `
-    }
-    if (resultsCount) {
-      resultsCount.textContent = '0 vidéo'
     }
     return
   }
 
   videos = (data ?? []) as VideoItem[]
-
-  const stillExists = videos.some((video) => video.id === activeVideoId)
-  if (!stillExists) {
-    activeVideoId = videos[0]?.id ?? null
-  }
-
+  if (!activeVideoId && videos.length) activeVideoId = videos[0].id
   renderPlayer()
   renderList()
 }
 
-async function handleUpload(event: SubmitEvent) {
-  event.preventDefault()
-  if (!uploadForm || isUploading) return
+async function uploadVideo(form: HTMLFormElement) {
+  if (isUploading || !uploadButton) return
 
-  const formData = new FormData(uploadForm)
+  const formData = new FormData(form)
   const title = String(formData.get('title') ?? '').trim()
   const category = String(formData.get('category') ?? '').trim()
   const description = String(formData.get('description') ?? '').trim()
   const file = formData.get('file')
 
-  if (!(file instanceof File) || !file.size) {
-    setStatus('Choisis un fichier vidéo valide.', 'error')
-    return
-  }
-
-  if (!title) {
-    setStatus('Le titre est obligatoire.', 'error')
+  if (!title || !category || !(file instanceof File) || !file.size) {
+    setStatus('Complète le titre, la catégorie et le fichier vidéo.', 'error')
     return
   }
 
   isUploading = true
-  if (uploadButton) uploadButton.disabled = true
-  setStatus('Envoi en cours…', 'neutral')
+  uploadButton.disabled = true
+  uploadButton.textContent = 'Publication en cours…'
+  setStatus('Envoi vers le stockage…')
 
-  const extension = file.name.includes('.') ? file.name.split('.').pop() : 'mp4'
-  const path = `${Date.now()}-${slugify(title)}.${extension}`
+  const extension = file.name.split('.').pop()?.toLowerCase() || 'mp4'
+  const fileName = `${Date.now()}-${slugify(title) || 'video'}.${extension}`
+  const storagePath = `${category.toLowerCase()}/${fileName}`
 
-  try {
-    const { error: uploadError } = await supabase.storage
-      .from(BUCKET)
-      .upload(path, file, {
-        cacheControl: '3600',
-        upsert: false,
-        contentType: file.type || 'video/mp4',
-      })
+  const { error: uploadError } = await supabase.storage
+    .from(BUCKET)
+    .upload(storagePath, file, {
+      cacheControl: '3600',
+      upsert: false,
+    })
 
-    if (uploadError) {
-      throw uploadError
-    }
-
-    const { data: publicData } = supabase.storage.from(BUCKET).getPublicUrl(path)
-    const publicUrl = publicData.publicUrl
-
-    const { data: inserted, error: insertError } = await supabase
-      .from('videos')
-      .insert({
-        title,
-        description: description || null,
-        category,
-        storage_path: path,
-        public_url: publicUrl,
-      })
-      .select('id')
-      .single()
-
-    if (insertError) {
-      await supabase.storage.from(BUCKET).remove([path])
-      throw insertError
-    }
-
-    uploadForm.reset()
-    activeVideoId = inserted.id
-    setStatus('Vidéo publiée dans l’archive.', 'success')
-    await loadVideos()
-  } catch (error) {
-    console.error(error)
-    const message = error instanceof Error ? error.message : 'Erreur inconnue.'
-    setStatus(`Échec de publication : ${message}`, 'error')
-  } finally {
+  if (uploadError) {
+    console.error(uploadError)
+    setStatus(`Upload impossible: ${uploadError.message}`, 'error')
     isUploading = false
-    if (uploadButton) uploadButton.disabled = false
+    uploadButton.disabled = false
+    uploadButton.textContent = 'Publier dans l’archive'
+    return
   }
+
+  const { data: publicUrlData } = supabase.storage.from(BUCKET).getPublicUrl(storagePath)
+
+  const { data: inserted, error: insertError } = await supabase
+    .from('videos')
+    .insert({
+      title,
+      category,
+      description: description || null,
+      storage_path: storagePath,
+      public_url: publicUrlData.publicUrl,
+    })
+    .select('id, title, description, category, public_url, storage_path, created_at')
+    .single()
+
+  if (insertError) {
+    console.error(insertError)
+    setStatus(`Métadonnées non enregistrées: ${insertError.message}`, 'error')
+    isUploading = false
+    uploadButton.disabled = false
+    uploadButton.textContent = 'Publier dans l’archive'
+    return
+  }
+
+  setStatus('Vidéo publiée dans l’archive.', 'success')
+  form.reset()
+  videos = [inserted as VideoItem, ...videos]
+  activeVideoId = (inserted as VideoItem).id
+  renderPlayer()
+  renderList()
+  isUploading = false
+  uploadButton.disabled = false
+  uploadButton.textContent = 'Publier dans l’archive'
 }
 
 searchInput?.addEventListener('input', (event) => {
-  currentSearch = (event.target as HTMLInputElement).value.trim()
+  currentSearch = (event.target as HTMLInputElement).value
   renderList()
 })
 
@@ -367,11 +403,12 @@ categoryFilter?.addEventListener('change', (event) => {
 })
 
 refreshButton?.addEventListener('click', () => {
-  void loadVideos()
+  loadVideos()
 })
 
-uploadForm?.addEventListener('submit', (event) => {
-  void handleUpload(event)
+uploadForm?.addEventListener('submit', async (event) => {
+  event.preventDefault()
+  await uploadVideo(uploadForm)
 })
 
-void loadVideos()
+loadVideos()
