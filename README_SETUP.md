@@ -1,4 +1,4 @@
-# GothiCanal – quick setup
+# GothiCanal - quick setup
 
 ## 1. Frontend env
 Use these variables locally and on Netlify:
@@ -9,14 +9,18 @@ Use these variables locally and on Netlify:
 ## 2. Supabase setup
 Run `supabase/setup_videos.sql` in the Supabase SQL editor.
 
-That creates:
-- table `public.videos`
-- public storage bucket `videos`
-- read/upload policies for the MVP
+That creates or updates:
 
-## 3. Upload flow
-The site uploads the selected video into Supabase Storage, inserts metadata into `public.videos`, then exposes it in the searchable archive/player.
+- `public.videos`
+- `public.profiles`
+- `public.video_comments`
+- `public.video_likes`
+- `public.chat_messages`
+- public storage bucket `videos`
+- Realtime publication for comments, likes, and chat
+
+## 3. Features
+The site supports anonymous video uploads, optional email/password accounts, anonymous aliases, per-video likes, per-video comments, and a global instant chat.
 
 ## 4. Security note
-The current SQL is intentionally permissive so the MVP works immediately from the browser with the anon key.
-Before opening uploads to the public, tighten the insert/storage policies and/or add authentication.
+Anonymous uploads, comments, likes, and chat inserts are intentionally allowed for this MVP. Before broad public launch, add moderation, rate limiting, abuse reporting, and stricter server-side validation.
