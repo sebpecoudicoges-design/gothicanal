@@ -33,6 +33,13 @@ type ChatMessage = {
   created_at: string
 }
 
+type SupabaseErrorLike = {
+  code?: string
+  message?: string
+}
+
+type LegacyVideoItem = Omit<VideoItem, 'owner_user_id' | 'owner_alias'>
+
 const CATEGORIES = ['Rituel', 'Nocturne', 'Archive', 'Velours', 'Obscur', 'Autre']
 const BUCKET = 'videos'
 const MAX_VIDEO_SIZE = 250 * 1024 * 1024
@@ -385,6 +392,18 @@ function getSelectedVideo() {
   return videos.find((video) => video.id === activeVideoId) ?? null
 }
 
+function isMissingSchemaError(error: SupabaseErrorLike | null | undefined) {
+  return error?.code === '42703' || error?.code === '42P01' || error?.code === 'PGRST205'
+}
+
+function normalizeLegacyVideos(items: LegacyVideoItem[]) {
+  return items.map((video) => ({
+    ...video,
+    owner_user_id: null,
+    owner_alias: 'Anonyme',
+  }))
+}
+
 function getFilteredVideos() {
   return videos.filter((video) => {
     const matchesCategory = currentCategory === 'all' || video.category === currentCategory
@@ -594,13 +613,13 @@ async function loadProfile() {
 }
 
 async function loadVideos() {
-  const { data, error } = await supabase
+  const legacyResponse = await supabase
     .from('videos')
-    .select('id, title, description, category, public_url, storage_path, owner_user_id, owner_alias, created_at')
+    .select('id, title, description, category, public_url, storage_path, created_at')
     .order('created_at', { ascending: false })
 
-  if (error) {
-    console.error(error)
+  if (legacyResponse.error) {
+    console.error(legacyResponse.error)
     if (videoList) {
       videoList.innerHTML = `
         <div class="empty-state empty-state--error">
@@ -612,7 +631,21 @@ async function loadVideos() {
     return
   }
 
-  videos = (data ?? []) as VideoItem[]
+  videos = normalizeLegacyVideos((legacyResponse.data ?? []) as LegacyVideoItem[])
+
+  const communityResponse = await supabase
+    .from('videos')
+    .select('id, title, description, category, public_url, storage_path, owner_user_id, owner_alias, created_at')
+    .order('created_at', { ascending: false })
+
+  if (!communityResponse.error) {
+    videos = (communityResponse.data ?? []) as VideoItem[]
+  } else if (!isMissingSchemaError(communityResponse.error)) {
+    console.error(communityResponse.error)
+  } else {
+    console.warn('Community columns missing, using legacy video schema.', communityResponse.error)
+  }
+
   if (!activeVideoId && videos.length) activeVideoId = videos[0].id
   renderPlayer()
   renderList()
@@ -639,8 +672,12 @@ async function loadEngagement() {
   if (commentsResponse.error) console.error(commentsResponse.error)
   if (likesResponse.error) console.error(likesResponse.error)
 
-  comments = (commentsResponse.data ?? []) as VideoComment[]
-  likes = (likesResponse.data ?? []) as VideoLike[]
+  comments = commentsResponse.error && isMissingSchemaError(commentsResponse.error)
+    ? []
+    : (commentsResponse.data ?? []) as VideoComment[]
+  likes = likesResponse.error && isMissingSchemaError(likesResponse.error)
+    ? []
+    : (likesResponse.data ?? []) as VideoLike[]
   renderEngagement()
 }
 
@@ -652,7 +689,9 @@ async function loadChat() {
     .limit(60)
 
   if (error) {
-    console.error(error)
+    if (!isMissingSchemaError(error)) console.error(error)
+    chatMessages = []
+    renderChat()
     return
   }
 
@@ -713,7 +752,7 @@ async function uploadVideo(form: HTMLFormElement) {
 
   const { data: publicUrlData } = supabase.storage.from(BUCKET).getPublicUrl(storagePath)
 
-  const { data: inserted, error: insertError } = await supabase
+  const communityInsert = await supabase
     .from('videos')
     .insert({
       title,
@@ -727,6 +766,31 @@ async function uploadVideo(form: HTMLFormElement) {
     .select('id, title, description, category, public_url, storage_path, owner_user_id, owner_alias, created_at')
     .single()
 
+  let inserted: VideoItem | null = null
+  let insertError = communityInsert.error
+
+  if (communityInsert.error && isMissingSchemaError(communityInsert.error)) {
+    console.warn('Community columns missing, inserting video with legacy schema.', communityInsert.error)
+    const legacyInsert = await supabase
+      .from('videos')
+      .insert({
+        title,
+        category,
+        description: description || null,
+        storage_path: storagePath,
+        public_url: publicUrlData.publicUrl,
+      })
+      .select('id, title, description, category, public_url, storage_path, created_at')
+      .single()
+
+    insertError = legacyInsert.error
+    inserted = legacyInsert.data
+      ? normalizeLegacyVideos([legacyInsert.data as LegacyVideoItem])[0]
+      : null
+  } else {
+    inserted = communityInsert.data as VideoItem | null
+  }
+
   if (insertError) {
     console.error(insertError)
     setStatus(`Métadonnées non enregistrées: ${insertError.message}`, 'error')
@@ -736,10 +800,18 @@ async function uploadVideo(form: HTMLFormElement) {
     return
   }
 
+  if (!inserted) {
+    setStatus('Métadonnées non enregistrées: réponse vide de Supabase.', 'error')
+    isUploading = false
+    uploadButton.disabled = false
+    uploadButton.textContent = 'Publier dans l’archive'
+    return
+  }
+
   setStatus('Vidéo publiée dans l’archive.', 'success')
   form.reset()
-  videos = [inserted as VideoItem, ...videos]
-  activeVideoId = (inserted as VideoItem).id
+  videos = [inserted, ...videos]
+  activeVideoId = inserted.id
   comments = []
   likes = []
   renderPlayer()
