@@ -532,11 +532,11 @@ function renderChat() {
 }
 
 function renderList() {
-  if (!videoList || !resultsCount || !heroCount) return
+  if (!videoList) return
 
   const filtered = getFilteredVideos()
-  resultsCount.textContent = `${filtered.length} vidéo${filtered.length > 1 ? 's' : ''}`
-  heroCount.textContent = String(videos.length)
+  if (resultsCount) resultsCount.textContent = `${filtered.length} vidéo${filtered.length > 1 ? 's' : ''}`
+  if (heroCount) heroCount.textContent = String(videos.length)
 
   if (!filtered.length) {
     videoList.innerHTML = `
@@ -632,6 +632,9 @@ async function loadVideos() {
   }
 
   videos = normalizeLegacyVideos((legacyResponse.data ?? []) as LegacyVideoItem[])
+  if (!activeVideoId && videos.length) activeVideoId = videos[0].id
+  renderPlayer()
+  renderList()
 
   const communityResponse = await supabase
     .from('videos')
@@ -640,15 +643,14 @@ async function loadVideos() {
 
   if (!communityResponse.error) {
     videos = (communityResponse.data ?? []) as VideoItem[]
+    renderPlayer()
+    renderList()
   } else if (!isMissingSchemaError(communityResponse.error)) {
     console.error(communityResponse.error)
   } else {
     console.warn('Community columns missing, using legacy video schema.', communityResponse.error)
   }
 
-  if (!activeVideoId && videos.length) activeVideoId = videos[0].id
-  renderPlayer()
-  renderList()
   await loadEngagement()
 }
 
