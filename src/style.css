@@ -371,38 +371,62 @@ textarea:focus {
 
 .video-list {
   display: grid;
-  gap: 10px;
+  grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
+  gap: 16px;
 }
 
-.video-row {
+.video-tile {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
-  gap: 12px;
-  align-items: center;
+  gap: 10px;
   width: 100%;
-  min-height: 72px;
-  padding: 12px;
-  border: 1px solid var(--border);
+  min-height: 232px;
+  padding: 0;
+  border: 1px solid transparent;
   border-radius: 10px;
   color: var(--text);
-  background: rgba(255, 255, 255, 0.035);
+  background: transparent;
   text-align: left;
 }
 
-.video-row:hover,
-.video-row--active {
+.video-tile:hover,
+.video-tile--active {
   border-color: var(--border-strong);
-  background: rgba(255, 141, 174, 0.08);
+  background: rgba(255, 141, 174, 0.05);
 }
 
-.video-row small {
+.video-thumb,
+.suggestion-thumb {
+  min-height: 128px;
+  display: flex;
+  align-items: end;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  color: rgba(255, 236, 243, 0.9);
+  background:
+    radial-gradient(circle at 78% 18%, rgba(255, 141, 174, 0.3), transparent 34%),
+    linear-gradient(145deg, rgba(82, 27, 44, 0.92), rgba(7, 5, 6, 0.98));
+  font-size: 0.84rem;
+}
+
+.video-tile__body {
+  display: grid;
+  gap: 5px;
+  padding: 0 4px 4px;
+}
+
+.video-tile strong,
+.suggestion-card strong {
+  line-height: 1.25;
+}
+
+.video-tile small,
+.suggestion-card small {
   display: block;
-  margin-top: 5px;
   color: var(--muted);
   line-height: 1.45;
 }
 
-.video-row__badge,
 .share-chip {
   display: inline-flex;
   align-items: center;
@@ -414,6 +438,185 @@ textarea:focus {
   color: rgba(255, 236, 243, 0.9);
   background: rgba(255, 255, 255, 0.05);
   font-size: 0.82rem;
+}
+
+.login-page,
+.video-page {
+  grid-column: 1 / -1;
+}
+
+.login-page {
+  display: grid;
+  gap: 18px;
+}
+
+.login-hero,
+.login-card,
+.watch-panel,
+.comment-zone,
+.suggestion-rail {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.035);
+}
+
+.login-hero {
+  display: grid;
+  gap: 10px;
+  padding: 22px;
+}
+
+.login-hero h2,
+.watch-meta h2 {
+  margin: 0;
+  font-size: clamp(1.6rem, 3vw, 2.6rem);
+  line-height: 1.05;
+}
+
+.login-hero p,
+.watch-meta p {
+  max-width: 72ch;
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.6;
+}
+
+.login-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.login-card {
+  display: grid;
+  gap: 14px;
+  padding: 18px;
+}
+
+.login-card h3,
+.comment-zone h3,
+.suggestion-rail h3 {
+  margin: 0;
+}
+
+.video-page {
+  display: grid;
+  gap: 16px;
+}
+
+.video-page__grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 300px;
+  gap: 18px;
+  align-items: start;
+}
+
+.watch-panel {
+  overflow: hidden;
+}
+
+.watch-frame {
+  min-height: min(58vh, 620px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #020202;
+  color: var(--muted);
+}
+
+.watch-video {
+  width: 100%;
+  max-height: min(70vh, 720px);
+  background: #000;
+}
+
+.watch-meta {
+  display: grid;
+  gap: 12px;
+  padding: 18px;
+}
+
+.watch-meta__actions,
+.comment-zone__header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.like-action {
+  min-height: 42px;
+  padding: 0 14px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.like-action--active {
+  color: #18070d;
+  border-color: transparent;
+  background: linear-gradient(135deg, #ffe7ef, #ff8dae);
+  font-weight: 720;
+}
+
+.comment-zone {
+  display: grid;
+  gap: 14px;
+  padding: 18px;
+}
+
+.comment-form {
+  display: grid;
+  gap: 10px;
+}
+
+.comment-list {
+  display: grid;
+  gap: 10px;
+}
+
+.comment-card {
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.16);
+}
+
+.comment-card strong,
+.comment-card small {
+  display: block;
+}
+
+.comment-card p {
+  margin: 7px 0;
+  color: var(--text);
+  line-height: 1.5;
+}
+
+.comment-card small {
+  color: var(--muted);
+}
+
+.suggestion-rail {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+}
+
+.suggestion-card {
+  display: grid;
+  gap: 8px;
+  padding: 0;
+  border: 0;
+  color: var(--text);
+  background: transparent;
+  text-align: left;
+}
+
+.suggestion-thumb {
+  min-height: 88px;
 }
 
 .detail-stack {
@@ -607,7 +810,9 @@ textarea:focus {
 
   .panel-toolbar,
   .upload-grid,
-  .message-form {
+  .message-form,
+  .login-grid,
+  .video-page__grid {
     grid-template-columns: 1fr;
   }
 

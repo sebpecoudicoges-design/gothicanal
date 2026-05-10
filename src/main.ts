@@ -3,7 +3,7 @@ import { supabase } from './lib/supabase'
 import type { Session } from '@supabase/supabase-js'
 
 type Visibility = 'public' | 'private'
-type ViewKey = 'public' | 'private' | 'shared' | 'messages'
+type ViewKey = 'public' | 'private' | 'shared' | 'messages' | 'login' | 'video'
 type MemberPanelMode = 'signin' | 'member'
 
 type VideoItem = {
@@ -48,6 +48,22 @@ type DirectMessage = {
   created_at: string
 }
 
+type VideoComment = {
+  id: string
+  video_id: string
+  body: string
+  author_user_id: string | null
+  author_alias: string
+  identity_key: string
+  created_at: string
+}
+
+type VideoLike = {
+  id: string
+  video_id: string
+  identity_key: string
+}
+
 type SupabaseErrorLike = {
   code?: string
   message?: string
@@ -77,6 +93,8 @@ let shares: VideoShare[] = []
 let profiles: Profile[] = []
 let threads: DirectThread[] = []
 let messages: DirectMessage[] = []
+let videoComments: VideoComment[] = []
+let videoLikes: VideoLike[] = []
 let signedUrls = new Map<string, string>()
 let realtimeChannel: ReturnType<typeof supabase.channel> | null = null
 
@@ -136,6 +154,10 @@ function getAuthorAlias() {
   return clampName(displayName || getAnonymousAlias())
 }
 
+function getIdentityKey() {
+  return session?.user.id ? `user:${session.user.id}` : `anon:${anonymousId}`
+}
+
 function currentUserId() {
   return session?.user.id ?? null
 }
@@ -177,6 +199,7 @@ app.innerHTML = `
         <button class="view-nav__item view-nav__item--active" type="button" data-view="public">Archive publique</button>
         <button class="view-nav__item" type="button" data-view="private">Ma bibliothèque</button>
         <button class="view-nav__item" type="button" data-view="shared">Partagés avec moi</button>
+        <button class="view-nav__item" type="button" data-view="login">Connexion</button>
         <button class="view-nav__item" type="button" id="openMessagesButton">Messagerie</button>
       </nav>
 
@@ -197,8 +220,6 @@ app.innerHTML = `
         </form>
 
         <form id="authForm" class="auth-form" data-member-panel="signin">
-          <label for="displayName">Nom de compte</label>
-          <input id="displayName" name="displayName" type="text" maxlength="40" minlength="2" placeholder="Ex. Sélène" />
           <label for="authEmail">Email</label>
           <input id="authEmail" name="email" type="email" autocomplete="email" />
           <label for="authPassword">Mot de passe</label>
@@ -361,7 +382,6 @@ const accountTitle = document.querySelector<HTMLHeadingElement>('#accountTitle')
 const accountSummary = document.querySelector<HTMLParagraphElement>('#accountSummary')
 const memberPanelToggle = document.querySelector<HTMLButtonElement>('#memberPanelToggle')
 const authForm = document.querySelector<HTMLFormElement>('#authForm')
-const displayNameInput = document.querySelector<HTMLInputElement>('#displayName')
 const authEmailInput = document.querySelector<HTMLInputElement>('#authEmail')
 const authPasswordInput = document.querySelector<HTMLInputElement>('#authPassword')
 const signUpButton = document.querySelector<HTMLButtonElement>('#signUpButton')
@@ -405,6 +425,8 @@ function renderShell() {
     private: ['Ma bibliothèque privée', 'Tes vidéos privées restent visibles seulement par toi et les utilisateurs invités.'],
     shared: ['Partagés avec moi', 'Les vidéos privées auxquelles d’autres utilisateurs t’ont donné accès.'],
     messages: ['Messagerie interne', 'Conversations privées entre comptes utilisateur.'],
+    login: ['Connexion', 'Connecte-toi, puis définis ton pseudo public dans ton espace membre.'],
+    video: ['Page vidéo', 'Lecture, likes, commentaires et vidéos similaires.'],
   }
 
   if (viewTitle) viewTitle.textContent = copy[activeView][0]
@@ -417,13 +439,12 @@ function renderShell() {
 function renderAccount() {
   if (anonymousAliasInput) anonymousAliasInput.value = getAnonymousAlias()
 
-  if (!accountTitle || !accountSummary || !displayNameInput || !authEmailInput || !authPasswordInput || !signOutButton) return
+  if (!accountTitle || !accountSummary || !authEmailInput || !authPasswordInput || !signOutButton) return
 
   if (!session) {
     memberPanelMode = 'signin'
     accountTitle.textContent = 'Présence anonyme'
     accountSummary.textContent = 'Connecte-toi pour créer une bibliothèque privée, partager des vidéos et envoyer des messages.'
-    displayNameInput.disabled = false
     authEmailInput.disabled = false
     authPasswordInput.disabled = false
     signOutButton.classList.add('hidden')
@@ -437,7 +458,6 @@ function renderAccount() {
   if (memberPanelMode === 'signin') memberPanelMode = 'member'
   accountTitle.textContent = displayName || session.user.email || 'Compte'
   accountSummary.textContent = 'Bibliothèque privée, partages ciblés et messagerie interne sont actifs.'
-  displayNameInput.value = displayName
   authEmailInput.value = session.user.email ?? ''
   authEmailInput.disabled = true
   authPasswordInput.disabled = true
@@ -470,6 +490,16 @@ function renderVideos() {
   renderShell()
   if (!videoList) return
 
+  if (activeView === 'login') {
+    renderLoginPage()
+    return
+  }
+
+  if (activeView === 'video') {
+    renderVideoPage()
+    return
+  }
+
   if (activeView === 'messages') {
     videoList.innerHTML = '<div class="empty-state"><h3>Messagerie ouverte</h3><p>Utilise le panneau de droite pour écrire à un utilisateur.</p></div>'
     return
@@ -492,9 +522,9 @@ function renderVideos() {
       const isSelected = video.id === selectedVideoId
       const badge = video.visibility === 'private' ? 'Privé' : 'Public'
       return `
-        <button class="video-row ${isSelected ? 'video-row--active' : ''}" type="button" data-video-id="${video.id}">
-          <span class="video-row__badge">${badge}</span>
-          <span>
+        <button class="video-tile ${isSelected ? 'video-tile--active' : ''}" type="button" data-video-id="${video.id}">
+          <span class="video-thumb">${badge}</span>
+          <span class="video-tile__body">
             <strong>${escapeHtml(video.title)}</strong>
             <small>${escapeHtml(video.category ?? 'Sans catégorie')} · ${escapeHtml(video.owner_alias)} · ${formatDate(video.created_at)}</small>
           </span>
@@ -506,11 +536,182 @@ function renderVideos() {
   videoList.querySelectorAll<HTMLButtonElement>('[data-video-id]').forEach((button) => {
     button.addEventListener('click', async () => {
       selectedVideoId = button.dataset.videoId ?? null
+      activeView = 'video'
+      await loadVideoInteractions()
       renderVideos()
       await renderPlayer()
       renderShares()
     })
   })
+}
+
+function renderLoginPage() {
+  if (!videoList) return
+
+  videoList.innerHTML = `
+    <section class="login-page">
+      <div class="login-hero">
+        <span class="section-kicker">Connexion</span>
+        <h2>Entre dans ton espace membre</h2>
+        <p>Connecte-toi avec ton email, puis définis ton pseudo public. Le pseudo sert pour tes vidéos, commentaires, partages et messages.</p>
+      </div>
+      <div class="login-grid">
+        <form id="loginPageForm" class="login-card">
+          <h3>Connexion</h3>
+          <label for="loginPageEmail">Email</label>
+          <input id="loginPageEmail" name="email" type="email" autocomplete="email" required />
+          <label for="loginPagePassword">Mot de passe</label>
+          <input id="loginPagePassword" name="password" type="password" minlength="6" autocomplete="current-password" required />
+          <button class="primary-button" type="submit">Se connecter</button>
+          <button id="loginPageCreate" class="ghost-button" type="button">Créer le compte</button>
+          <p id="loginPageStatus" class="status-line" aria-live="polite"></p>
+        </form>
+        <form id="loginPseudoForm" class="login-card">
+          <h3>Pseudo public</h3>
+          <label for="loginPseudo">Pseudo</label>
+          <input id="loginPseudo" name="displayName" type="text" maxlength="40" minlength="2" value="${escapeHtml(displayName || getAnonymousAlias())}" ${session ? '' : 'disabled'} />
+          <button class="primary-button" type="submit" ${session ? '' : 'disabled'}>Enregistrer le pseudo</button>
+          <p class="muted-text">${session ? 'Ton pseudo sera visible sur tes vidéos et commentaires.' : 'Connecte-toi avant de choisir ton pseudo.'}</p>
+        </form>
+      </div>
+    </section>
+  `
+
+  const loginPageForm = document.querySelector<HTMLFormElement>('#loginPageForm')
+  const loginPageCreate = document.querySelector<HTMLButtonElement>('#loginPageCreate')
+  const loginPageStatus = document.querySelector<HTMLParagraphElement>('#loginPageStatus')
+  const loginPseudoForm = document.querySelector<HTMLFormElement>('#loginPseudoForm')
+
+  loginPageForm?.addEventListener('submit', async (event) => {
+    event.preventDefault()
+    const formData = new FormData(loginPageForm)
+    const email = String(formData.get('email') ?? '').trim()
+    const password = String(formData.get('password') ?? '')
+    const { error } = await supabase.auth.signInWithPassword({ email, password })
+    setStatus(loginPageStatus, error ? error.message : 'Connexion ouverte.', error ? 'error' : 'success')
+  })
+
+  loginPageCreate?.addEventListener('click', async () => {
+    if (!loginPageForm) return
+    const formData = new FormData(loginPageForm)
+    const email = String(formData.get('email') ?? '').trim()
+    const password = String(formData.get('password') ?? '')
+    if (!email || !password) {
+      setStatus(loginPageStatus, 'Renseigne email et mot de passe.', 'error')
+      return
+    }
+    const { error } = await supabase.auth.signUp({ email, password })
+    setStatus(loginPageStatus, error ? error.message : 'Compte créé. Tu peux définir ton pseudo après connexion.', error ? 'error' : 'success')
+  })
+
+  loginPseudoForm?.addEventListener('submit', async (event) => {
+    event.preventDefault()
+    await updateMemberProfile(loginPseudoForm)
+    renderLoginPage()
+  })
+}
+
+function renderVideoPage() {
+  const video = getSelectedVideo()
+  if (!videoList) return
+
+  if (!video) {
+    videoList.innerHTML = '<div class="empty-state"><h3>Vidéo introuvable</h3><p>Retourne à l’archive pour choisir une vidéo.</p></div>'
+    return
+  }
+
+  const liked = videoLikes.some((like) => like.identity_key === getIdentityKey())
+  const suggestions = getAllVideos()
+    .filter((item) => item.id !== video.id)
+    .slice(0, 8)
+
+  videoList.innerHTML = `
+    <section class="video-page">
+      <button id="backToArchiveButton" class="ghost-button" type="button">Retour à l’archive</button>
+      <div class="video-page__grid">
+        <article class="watch-panel">
+          <div class="watch-frame" id="watchFrame"><span>Chargement...</span></div>
+          <div class="watch-meta">
+            <div>
+              <span class="section-kicker">${video.visibility === 'private' ? 'Vidéo privée' : 'Vidéo publique'}</span>
+              <h2>${escapeHtml(video.title)}</h2>
+              <p>${escapeHtml(video.description ?? 'Aucune description fournie.')}</p>
+              <small>${escapeHtml(video.category ?? 'Sans catégorie')} · ${escapeHtml(video.owner_alias)} · ${formatDate(video.created_at)}</small>
+            </div>
+            <button id="videoLikeButton" class="like-action ${liked ? 'like-action--active' : ''}" type="button">♥ ${videoLikes.length}</button>
+          </div>
+          <section class="comment-zone">
+            <div class="comment-zone__header">
+              <h3>Commentaires</h3>
+              <span>${videoComments.length}</span>
+            </div>
+            <form id="videoCommentForm" class="comment-form">
+              <textarea name="comment" maxlength="700" rows="3" placeholder="Ajouter un commentaire..." required></textarea>
+              <button class="primary-button" type="submit">Publier</button>
+            </form>
+            <div class="comment-list">
+              ${videoComments.length
+                ? videoComments.map((comment) => `
+                    <article class="comment-card">
+                      <strong>${escapeHtml(comment.author_alias)}</strong>
+                      <p>${escapeHtml(comment.body)}</p>
+                      <small>${formatDate(comment.created_at)}</small>
+                    </article>
+                  `).join('')
+                : '<div class="empty-state"><p>Aucun commentaire pour le moment.</p></div>'
+              }
+            </div>
+          </section>
+        </article>
+        <aside class="suggestion-rail">
+          <h3>Vidéos similaires</h3>
+          ${suggestions.map((item) => `
+            <button class="suggestion-card" type="button" data-suggest-video-id="${item.id}">
+              <span class="suggestion-thumb">${item.visibility === 'private' ? 'Privé' : 'Public'}</span>
+              <strong>${escapeHtml(item.title)}</strong>
+              <small>${escapeHtml(item.category ?? 'Sans catégorie')}</small>
+            </button>
+          `).join('')}
+        </aside>
+      </div>
+    </section>
+  `
+
+  renderWatchFrame(video)
+  document.querySelector<HTMLButtonElement>('#backToArchiveButton')?.addEventListener('click', () => {
+    activeView = video.visibility === 'private' ? 'private' : 'public'
+    renderVideos()
+  })
+  document.querySelector<HTMLButtonElement>('#videoLikeButton')?.addEventListener('click', toggleVideoLike)
+  document.querySelector<HTMLFormElement>('#videoCommentForm')?.addEventListener('submit', async (event) => {
+    event.preventDefault()
+    await submitVideoComment(event.currentTarget as HTMLFormElement)
+  })
+  document.querySelectorAll<HTMLButtonElement>('[data-suggest-video-id]').forEach((button) => {
+    button.addEventListener('click', async () => {
+      selectedVideoId = button.dataset.suggestVideoId ?? null
+      await loadVideoInteractions()
+      renderVideoPage()
+    })
+  })
+}
+
+async function renderWatchFrame(video: VideoItem) {
+  const frame = document.querySelector<HTMLDivElement>('#watchFrame')
+  if (!frame) return
+  const url = await getPlaybackUrl(video)
+  if (!url) {
+    frame.innerHTML = '<span>Lecture indisponible.</span>'
+    return
+  }
+  frame.innerHTML = ''
+  const element = document.createElement('video')
+  element.controls = true
+  element.playsInline = true
+  element.preload = 'metadata'
+  element.src = url
+  element.className = 'watch-video'
+  frame.append(element)
 }
 
 async function getPlaybackUrl(video: VideoItem) {
@@ -529,6 +730,33 @@ async function getPlaybackUrl(video: VideoItem) {
 
   signedUrls.set(video.id, data.signedUrl)
   return data.signedUrl
+}
+
+async function loadVideoInteractions() {
+  const video = getSelectedVideo()
+  if (!video) {
+    videoComments = []
+    videoLikes = []
+    return
+  }
+
+  const [commentsResponse, likesResponse] = await Promise.all([
+    supabase
+      .from('video_comments')
+      .select('id, video_id, body, author_user_id, author_alias, identity_key, created_at')
+      .eq('video_id', video.id)
+      .order('created_at', { ascending: true }),
+    supabase
+      .from('video_likes')
+      .select('id, video_id, identity_key')
+      .eq('video_id', video.id),
+  ])
+
+  if (commentsResponse.error && !isMissingSchemaError(commentsResponse.error)) console.error(commentsResponse.error)
+  if (likesResponse.error && !isMissingSchemaError(likesResponse.error)) console.error(likesResponse.error)
+
+  videoComments = (commentsResponse.data ?? []) as VideoComment[]
+  videoLikes = (likesResponse.data ?? []) as VideoLike[]
 }
 
 async function renderPlayer() {
@@ -1048,11 +1276,66 @@ async function sendDirectMessage(form: HTMLFormElement) {
   renderThreads()
 }
 
+async function toggleVideoLike() {
+  const video = getSelectedVideo()
+  if (!video) return
+
+  const identityKey = getIdentityKey()
+  const existing = videoLikes.find((like) => like.identity_key === identityKey)
+
+  if (existing) {
+    const { error } = await supabase
+      .from('video_likes')
+      .delete()
+      .eq('video_id', video.id)
+      .eq('identity_key', identityKey)
+    if (error) console.error(error)
+  } else {
+    const { error } = await supabase
+      .from('video_likes')
+      .insert({
+        video_id: video.id,
+        author_user_id: currentUserId(),
+        author_alias: getAuthorAlias(),
+        identity_key: identityKey,
+      })
+    if (error) console.error(error)
+  }
+
+  await loadVideoInteractions()
+  renderVideoPage()
+}
+
+async function submitVideoComment(form: HTMLFormElement) {
+  const video = getSelectedVideo()
+  if (!video) return
+
+  const body = String(new FormData(form).get('comment') ?? '').trim()
+  if (!body) return
+
+  const { error } = await supabase
+    .from('video_comments')
+    .insert({
+      video_id: video.id,
+      body,
+      author_user_id: currentUserId(),
+      author_alias: getAuthorAlias(),
+      identity_key: getIdentityKey(),
+    })
+
+  if (error) {
+    console.error(error)
+    return
+  }
+
+  await loadVideoInteractions()
+  renderVideoPage()
+}
+
 async function handleAuth(mode: 'signin' | 'signup') {
-  if (!authEmailInput || !authPasswordInput || !displayNameInput) return
+  if (!authEmailInput || !authPasswordInput) return
   const email = authEmailInput.value.trim()
   const password = authPasswordInput.value
-  const name = clampName(displayNameInput.value || getAnonymousAlias())
 
   if (!email || !password) {
     setStatus(authStatus, 'Renseigne email et mot de passe.', 'error')
@@ -1063,7 +1346,6 @@ async function handleAuth(mode: 'signin' | 'signup') {
     const { data, error } = await supabase.auth.signUp({
       email,
       password,
-      options: { data: { display_name: name } },
     })
 
     if (error) {
@@ -1071,10 +1353,8 @@ async function handleAuth(mode: 'signin' | 'signup') {
       return
     }
 
-    if (data.user) {
-      await supabase.from('profiles').upsert({ user_id: data.user.id, display_name: name })
-    }
-    setStatus(authStatus, 'Compte créé. Vérifie ton email si Supabase le demande.', 'success')
+    if (data.user) await supabase.from('profiles').upsert({ user_id: data.user.id, display_name: getAnonymousAlias() })
+    setStatus(authStatus, 'Compte créé. Connecte-toi puis définis ton pseudo.', 'success')
     return
   }
 
