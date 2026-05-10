@@ -1038,7 +1038,9 @@ supabase.auth.onAuthStateChange(async (_event, nextSession) => {
 })
 
 async function init() {
-  await cleanBrowserCaches()
+  cleanBrowserCaches().catch((error: unknown) => {
+    console.warn('Cache cleanup skipped.', error)
+  })
   const { data } = await supabase.auth.getSession()
   session = data.session
   subscribeRealtime()
