@@ -2,34 +2,48 @@ import './style.css'
 import { supabase } from './lib/supabase'
 import type { Session } from '@supabase/supabase-js'
 
+type Visibility = 'public' | 'private'
+type ViewKey = 'public' | 'private' | 'shared' | 'messages'
+
 type VideoItem = {
   id: string
   title: string
   description: string | null
   category: string | null
-  public_url: string
+  public_url: string | null
   storage_path: string
+  storage_bucket: string
+  visibility: Visibility
   owner_user_id: string | null
   owner_alias: string
   created_at: string
 }
 
-type VideoComment = {
+type Profile = {
+  user_id: string
+  display_name: string
+}
+
+type VideoShare = {
   id: string
-  body: string
-  author_alias: string
+  video_id: string
+  owner_user_id: string
+  shared_with_user_id: string
   created_at: string
 }
 
-type VideoLike = {
+type DirectThread = {
   id: string
-  identity_key: string
+  owner_user_id: string
+  participant_user_id: string
+  updated_at: string
 }
 
-type ChatMessage = {
+type DirectMessage = {
   id: string
+  thread_id: string
+  sender_user_id: string
   body: string
-  author_alias: string
   created_at: string
 }
 
@@ -38,54 +52,33 @@ type SupabaseErrorLike = {
   message?: string
 }
 
-type LegacyVideoItem = Omit<VideoItem, 'owner_user_id' | 'owner_alias'>
-
 const CATEGORIES = ['Rituel', 'Nocturne', 'Archive', 'Velours', 'Obscur', 'Autre']
-const BUCKET = 'videos'
+const PUBLIC_BUCKET = 'videos'
+const PRIVATE_BUCKET = 'private-videos'
 const MAX_VIDEO_SIZE = 250 * 1024 * 1024
 const ALLOWED_VIDEO_TYPES = ['video/mp4', 'video/webm', 'video/quicktime', 'video/x-m4v']
 const ANON_ID_KEY = 'gothicanal:anonymous-id'
 const ANON_ALIAS_KEY = 'gothicanal:anonymous-alias'
-const CACHE_CLEAN_VERSION = 'gothicanal-cache-clean-2026-05-10-v1'
 
-let videos: VideoItem[] = []
-let comments: VideoComment[] = []
-let likes: VideoLike[] = []
-let chatMessages: ChatMessage[] = []
-let activeVideoId: string | null = null
-let currentSearch = ''
-let currentCategory = 'all'
-let isUploading = false
 let session: Session | null = null
 let displayName = ''
-let communityChannel: ReturnType<typeof supabase.channel> | null = null
+let activeView: ViewKey = 'public'
+let selectedVideoId: string | null = null
+let selectedThreadId: string | null = null
+let isUploading = false
+
+let publicVideos: VideoItem[] = []
+let privateVideos: VideoItem[] = []
+let sharedVideos: VideoItem[] = []
+let shares: VideoShare[] = []
+let profiles: Profile[] = []
+let threads: DirectThread[] = []
+let messages: DirectMessage[] = []
+let signedUrls = new Map<string, string>()
+let realtimeChannel: ReturnType<typeof supabase.channel> | null = null
 
 const app = document.querySelector<HTMLDivElement>('#app')
 if (!app) throw new Error('App root not found')
-
-async function cleanBrowserCaches() {
-  const tasks: Promise<unknown>[] = []
-
-  if ('caches' in window) {
-    tasks.push(
-      caches.keys().then((keys) => Promise.all(keys.map((key) => caches.delete(key)))),
-    )
-  }
-
-  if ('serviceWorker' in navigator) {
-    tasks.push(
-      navigator.serviceWorker
-        .getRegistrations()
-        .then((registrations) => Promise.all(registrations.map((registration) => registration.unregister()))),
-    )
-  }
-
-  const results = await Promise.allSettled(tasks)
-  const failed = results.filter((result) => result.status === 'rejected')
-  if (failed.length) console.warn('Cache cleanup skipped partially.', failed)
-
-  sessionStorage.setItem('gothicanal:last-cache-clean', CACHE_CLEAN_VERSION)
-}
 
 function getOrCreateAnonymousId() {
   const existing = localStorage.getItem(ANON_ID_KEY)
@@ -96,280 +89,15 @@ function getOrCreateAnonymousId() {
   return next
 }
 
+const anonymousId = getOrCreateAnonymousId()
+
 function getAnonymousAlias() {
   return localStorage.getItem(ANON_ALIAS_KEY) || 'Visiteur nocturne'
 }
 
-const anonymousId = getOrCreateAnonymousId()
-
-app.innerHTML = `
-  <main class="site-shell">
-    <header class="topbar">
-      <div class="topbar__inner">
-        <a href="#top" class="brandmark" aria-label="GothiCanal">
-          <span class="brandmark__dot"></span>
-          <span class="brandmark__text">GothiCanal</span>
-        </a>
-        <nav class="topnav">
-          <a href="#archive">Archive</a>
-          <a href="#upload">Déposer</a>
-          <a href="#player">Visionner</a>
-          <a href="#community">Communauté</a>
-        </nav>
-      </div>
-    </header>
-
-    <section class="hero-v3" id="top">
-      <div class="hero-v3__backdrop"></div>
-      <div class="hero-v3__grain"></div>
-      <div class="hero-v3__spotlight"></div>
-      <div class="hero-v3__container">
-        <div class="hero-v3__copy reveal-up">
-          <span class="eyebrow">Répertoire privé d'images en mouvement</span>
-          <h1>Collectionne, retrouve et rejoue les séquences qui suggèrent plus qu’elles ne disent.</h1>
-          <p>
-            Un lieu pensé pour trier des fragments, classer des ambiances, commenter les visions et rester présent sans forcément signer.
-          </p>
-          <div class="hero-v3__actions">
-            <a class="primary-link" href="#archive">Explorer l’archive</a>
-            <a class="secondary-link" href="#upload">Ajouter une séquence</a>
-          </div>
-          <div class="hero-v3__stats">
-            <div class="stat-card">
-              <span class="stat-card__value" id="heroCount">0</span>
-              <span class="stat-card__label">séquences rangées</span>
-            </div>
-            <div class="stat-card">
-              <span class="stat-card__value" id="heroLikeCount">0</span>
-              <span class="stat-card__label">likes sur la sélection</span>
-            </div>
-            <div class="stat-card">
-              <span class="stat-card__value" id="heroChatCount">0</span>
-              <span class="stat-card__label">messages de salon</span>
-            </div>
-          </div>
-        </div>
-
-        <div class="hero-v3__visual reveal-up reveal-delay-1">
-          <div class="hero-v3__frame">
-            <img src="/gothicanal-banner.jpg" alt="Bandeau GothiCanal" class="hero-v3__image" />
-          </div>
-        </div>
-      </div>
-    </section>
-
-    <section class="tease-band reveal-up reveal-delay-2">
-      <div class="tease-band__inner">
-        <span>Upload anonyme</span>
-        <span>Espaces utilisateur</span>
-        <span>Commentaires</span>
-        <span>Salon instantané</span>
-      </div>
-    </section>
-
-    <section class="toolbar reveal-up reveal-delay-2" id="archive">
-      <div class="toolbar__search">
-        <label for="searchInput">Recherche</label>
-        <input id="searchInput" type="search" placeholder="Titre, description, auteur ou catégorie" autocomplete="off" />
-      </div>
-      <div class="toolbar__filter">
-        <label for="categoryFilter">Catégorie</label>
-        <select id="categoryFilter">
-          <option value="all">Toutes</option>
-          ${CATEGORIES.map((category) => `<option value="${category}">${category}</option>`).join('')}
-        </select>
-      </div>
-      <button id="refreshButton" class="ghost-button" type="button">Actualiser</button>
-    </section>
-
-    <section class="layout-grid">
-      <aside class="sidebar-stack reveal-up reveal-delay-2">
-        <article class="panel panel--sticky-lite" id="account">
-          <div class="panel__header panel__header--premium">
-            <span class="panel__kicker">Espace</span>
-            <h2>Profil et présence</h2>
-            <p id="accountSummary">Tu peux participer en anonyme ou créer un compte.</p>
-          </div>
-
-          <form id="aliasForm" class="compact-form">
-            <div class="field">
-              <label for="anonymousAlias">Nom anonyme</label>
-              <input id="anonymousAlias" name="alias" type="text" maxlength="40" minlength="2" required />
-            </div>
-            <button class="ghost-button" type="submit">Garder ce nom</button>
-          </form>
-
-          <form id="authForm" class="compact-form auth-box">
-            <div class="field">
-              <label for="displayName">Nom de compte</label>
-              <input id="displayName" name="displayName" type="text" maxlength="40" minlength="2" placeholder="Ex. Sélène" />
-            </div>
-            <div class="field">
-              <label for="authEmail">Email</label>
-              <input id="authEmail" name="email" type="email" autocomplete="email" />
-            </div>
-            <div class="field">
-              <label for="authPassword">Mot de passe</label>
-              <input id="authPassword" name="password" type="password" minlength="6" autocomplete="current-password" />
-            </div>
-            <div class="button-row">
-              <button id="signInButton" class="primary-button" type="submit" data-mode="signin">Connexion</button>
-              <button id="signUpButton" class="ghost-button" type="button">Créer</button>
-              <button id="signOutButton" class="ghost-button hidden" type="button">Sortir</button>
-            </div>
-            <p id="authStatus" class="form-status" aria-live="polite"></p>
-          </form>
-        </article>
-
-        <article class="panel" id="upload">
-          <div class="panel__header panel__header--premium">
-            <span class="panel__kicker">Dépôt</span>
-            <h2>Déposer une nouvelle séquence</h2>
-            <p>L’ajout reste possible sans compte, avec ton nom anonyme.</p>
-          </div>
-
-          <form id="uploadForm" class="upload-form">
-            <div class="field">
-              <label for="videoTitle">Titre</label>
-              <input id="videoTitle" name="title" type="text" maxlength="120" required placeholder="Ex. Théâtre de minuit" />
-            </div>
-
-            <div class="field">
-              <label for="videoCategory">Catégorie</label>
-              <select id="videoCategory" name="category" required>
-                ${CATEGORIES.map((category) => `<option value="${category}">${category}</option>`).join('')}
-              </select>
-            </div>
-
-            <div class="field">
-              <label for="videoDescription">Description</label>
-              <textarea id="videoDescription" name="description" rows="4" maxlength="500" placeholder="Quelques lignes, en gardant le mystère intact."></textarea>
-            </div>
-
-            <div class="field">
-              <label for="videoFile">Fichier vidéo</label>
-              <input id="videoFile" name="file" type="file" accept="video/mp4,video/webm,video/quicktime,video/x-m4v" required />
-              <small>MP4, WebM, MOV ou M4V. Taille conseillée: 250 Mo maximum.</small>
-            </div>
-
-            <button id="uploadButton" class="primary-button" type="submit">Publier dans l’archive</button>
-            <p id="formStatus" class="form-status" aria-live="polite"></p>
-          </form>
-        </article>
-      </aside>
-
-      <section class="content-column">
-        <article class="panel player-panel reveal-up reveal-delay-2" id="player">
-          <div class="panel__header panel__header--inline panel__header--premium">
-            <div>
-              <span class="panel__kicker">Lecture</span>
-              <h2 id="playerTitle">Aucune sélection</h2>
-            </div>
-            <span id="resultsCount" class="results-pill">0 vidéo</span>
-          </div>
-          <p id="playerMeta" class="player-meta">Choisis une vidéo dans l’archive pour lancer la lecture.</p>
-
-          <div class="player-frame" id="playerFrame">
-            <div class="player-frame__empty">
-              <span>Le projecteur attend.</span>
-            </div>
-          </div>
-          <p id="playerDescription" class="player-description"></p>
-
-          <div class="engagement-bar">
-            <button id="likeButton" class="like-button" type="button" disabled>♡ <span id="likeCount">0</span></button>
-            <span id="selectedAuthor" class="player-meta">Publié par Anonyme</span>
-          </div>
-
-          <section class="comments-block" id="community">
-            <div class="panel__header panel__header--inline">
-              <div>
-                <span class="panel__kicker">Commentaires</span>
-                <h3>Réactions sous la vidéo</h3>
-              </div>
-              <span id="commentCount" class="results-pill">0</span>
-            </div>
-            <form id="commentForm" class="message-form">
-              <textarea id="commentInput" name="comment" rows="3" maxlength="700" placeholder="Écrire un commentaire..." required></textarea>
-              <button class="primary-button" type="submit">Envoyer</button>
-            </form>
-            <div id="commentsList" class="message-list"></div>
-          </section>
-        </article>
-
-        <article class="panel reveal-up reveal-delay-3">
-          <div class="panel__header panel__header--premium">
-            <span class="panel__kicker">Archive</span>
-            <h2>Répertoire vidéo</h2>
-            <p>Recherche rapide, tri par catégorie, lecture instantanée.</p>
-          </div>
-          <div id="videoList" class="video-grid"></div>
-        </article>
-
-        <article class="panel chat-panel reveal-up reveal-delay-3">
-          <div class="panel__header panel__header--inline panel__header--premium">
-            <div>
-              <span class="panel__kicker">Salon</span>
-              <h2>Messagerie instantanée</h2>
-              <p>Ouverte aux anonymes et aux comptes connectés.</p>
-            </div>
-            <span id="chatCount" class="results-pill">0</span>
-          </div>
-          <div id="chatList" class="message-list message-list--chat"></div>
-          <form id="chatForm" class="message-form message-form--inline">
-            <input id="chatInput" name="message" maxlength="700" placeholder="Message au salon..." autocomplete="off" required />
-            <button class="primary-button" type="submit">Envoyer</button>
-          </form>
-        </article>
-      </section>
-    </section>
-  </main>
-`
-
-const searchInput = document.querySelector<HTMLInputElement>('#searchInput')
-const categoryFilter = document.querySelector<HTMLSelectElement>('#categoryFilter')
-const refreshButton = document.querySelector<HTMLButtonElement>('#refreshButton')
-const uploadForm = document.querySelector<HTMLFormElement>('#uploadForm')
-const uploadButton = document.querySelector<HTMLButtonElement>('#uploadButton')
-const formStatus = document.querySelector<HTMLParagraphElement>('#formStatus')
-const resultsCount = document.querySelector<HTMLSpanElement>('#resultsCount')
-const videoList = document.querySelector<HTMLDivElement>('#videoList')
-const playerTitle = document.querySelector<HTMLHeadingElement>('#playerTitle')
-const playerMeta = document.querySelector<HTMLParagraphElement>('#playerMeta')
-const playerDescription = document.querySelector<HTMLParagraphElement>('#playerDescription')
-const playerFrame = document.querySelector<HTMLDivElement>('#playerFrame')
-const heroCount = document.querySelector<HTMLSpanElement>('#heroCount')
-const heroLikeCount = document.querySelector<HTMLSpanElement>('#heroLikeCount')
-const heroChatCount = document.querySelector<HTMLSpanElement>('#heroChatCount')
-const aliasForm = document.querySelector<HTMLFormElement>('#aliasForm')
-const anonymousAliasInput = document.querySelector<HTMLInputElement>('#anonymousAlias')
-const authForm = document.querySelector<HTMLFormElement>('#authForm')
-const signUpButton = document.querySelector<HTMLButtonElement>('#signUpButton')
-const signOutButton = document.querySelector<HTMLButtonElement>('#signOutButton')
-const authStatus = document.querySelector<HTMLParagraphElement>('#authStatus')
-const accountSummary = document.querySelector<HTMLParagraphElement>('#accountSummary')
-const displayNameInput = document.querySelector<HTMLInputElement>('#displayName')
-const authEmailInput = document.querySelector<HTMLInputElement>('#authEmail')
-const authPasswordInput = document.querySelector<HTMLInputElement>('#authPassword')
-const likeButton = document.querySelector<HTMLButtonElement>('#likeButton')
-const likeCount = document.querySelector<HTMLSpanElement>('#likeCount')
-const selectedAuthor = document.querySelector<HTMLSpanElement>('#selectedAuthor')
-const commentForm = document.querySelector<HTMLFormElement>('#commentForm')
-const commentInput = document.querySelector<HTMLTextAreaElement>('#commentInput')
-const commentsList = document.querySelector<HTMLDivElement>('#commentsList')
-const commentCount = document.querySelector<HTMLSpanElement>('#commentCount')
-const chatForm = document.querySelector<HTMLFormElement>('#chatForm')
-const chatInput = document.querySelector<HTMLInputElement>('#chatInput')
-const chatList = document.querySelector<HTMLDivElement>('#chatList')
-const chatCount = document.querySelector<HTMLSpanElement>('#chatCount')
-
-function escapeHtml(value: string) {
-  return value
-    .replaceAll('&', '&amp;')
-    .replaceAll('<', '&lt;')
-    .replaceAll('>', '&gt;')
-    .replaceAll('"', '&quot;')
-    .replaceAll("'", '&#39;')
+function clampName(value: string) {
+  const next = value.trim().slice(0, 40)
+  return next.length >= 2 ? next : 'Visiteur nocturne'
 }
 
 function slugify(value: string) {
@@ -381,6 +109,15 @@ function slugify(value: string) {
     .replace(/(^-|-$)/g, '')
 }
 
+function escapeHtml(value: string) {
+  return value
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;')
+}
+
 function formatDate(value: string) {
   return new Intl.DateTimeFormat('fr-FR', {
     dateStyle: 'medium',
@@ -388,217 +125,458 @@ function formatDate(value: string) {
   }).format(new Date(value))
 }
 
-function clampName(value: string) {
-  const next = value.trim().slice(0, 40)
-  return next.length >= 2 ? next : 'Visiteur nocturne'
-}
-
-function setStatus(message: string, tone: 'neutral' | 'success' | 'error' = 'neutral') {
-  if (!formStatus) return
-  formStatus.textContent = message
-  formStatus.dataset.tone = tone
-}
-
-function setAuthStatus(message: string, tone: 'neutral' | 'success' | 'error' = 'neutral') {
-  if (!authStatus) return
-  authStatus.textContent = message
-  authStatus.dataset.tone = tone
-}
-
-function getIdentityKey() {
-  return session?.user.id ? `user:${session.user.id}` : `anon:${anonymousId}`
+function isMissingSchemaError(error: SupabaseErrorLike | null | undefined) {
+  return error?.code === '42703' || error?.code === '42P01' || error?.code === 'PGRST205'
 }
 
 function getAuthorAlias() {
   return clampName(displayName || getAnonymousAlias())
 }
 
+function currentUserId() {
+  return session?.user.id ?? null
+}
+
+function getAllVideos() {
+  return [...publicVideos, ...privateVideos, ...sharedVideos]
+}
+
+function getVisibleVideos() {
+  if (activeView === 'private') return privateVideos
+  if (activeView === 'shared') return sharedVideos
+  return publicVideos
+}
+
 function getSelectedVideo() {
-  return videos.find((video) => video.id === activeVideoId) ?? null
+  return getAllVideos().find((video) => video.id === selectedVideoId) ?? null
 }
 
-function isMissingSchemaError(error: SupabaseErrorLike | null | undefined) {
-  return error?.code === '42703' || error?.code === '42P01' || error?.code === 'PGRST205'
+function profileName(userId: string | null) {
+  if (!userId) return 'Anonyme'
+  return profiles.find((profile) => profile.user_id === userId)?.display_name ?? userId.slice(0, 8)
 }
 
-function normalizeLegacyVideos(items: LegacyVideoItem[]) {
-  return items.map((video) => ({
-    ...video,
-    owner_user_id: null,
-    owner_alias: 'Anonyme',
-  }))
+function otherThreadUser(thread: DirectThread) {
+  const userId = currentUserId()
+  if (!userId) return thread.participant_user_id
+  return thread.owner_user_id === userId ? thread.participant_user_id : thread.owner_user_id
 }
 
-function getFilteredVideos() {
-  return videos.filter((video) => {
-    const matchesCategory = currentCategory === 'all' || video.category === currentCategory
-    const haystack = `${video.title} ${video.description ?? ''} ${video.category ?? ''} ${video.owner_alias}`.toLowerCase()
-    const matchesSearch = haystack.includes(currentSearch.toLowerCase())
-    return matchesCategory && matchesSearch
+app.innerHTML = `
+  <main class="app-shell">
+    <aside class="app-sidebar">
+      <a href="#public" class="brandmark" aria-label="GothiCanal">
+        <span class="brandmark__dot"></span>
+        <span class="brandmark__text">GothiCanal</span>
+      </a>
+
+      <nav class="view-nav" aria-label="Navigation principale">
+        <button class="view-nav__item view-nav__item--active" type="button" data-view="public">Archive publique</button>
+        <button class="view-nav__item" type="button" data-view="private">Ma bibliothèque</button>
+        <button class="view-nav__item" type="button" data-view="shared">Partagés avec moi</button>
+        <button class="view-nav__item" type="button" data-view="messages">Messagerie</button>
+      </nav>
+
+      <section class="account-card" id="account">
+        <span class="section-kicker">Compte</span>
+        <h2 id="accountTitle">Présence anonyme</h2>
+        <p id="accountSummary">Connecte-toi pour créer une bibliothèque privée et partager tes vidéos.</p>
+
+        <form id="aliasForm" class="compact-form">
+          <label for="anonymousAlias">Nom anonyme</label>
+          <div class="inline-field">
+            <input id="anonymousAlias" name="alias" type="text" maxlength="40" minlength="2" required />
+            <button class="icon-button" type="submit" title="Enregistrer l'alias">OK</button>
+          </div>
+        </form>
+
+        <form id="authForm" class="auth-form">
+          <label for="displayName">Nom de compte</label>
+          <input id="displayName" name="displayName" type="text" maxlength="40" minlength="2" placeholder="Ex. Sélène" />
+          <label for="authEmail">Email</label>
+          <input id="authEmail" name="email" type="email" autocomplete="email" />
+          <label for="authPassword">Mot de passe</label>
+          <input id="authPassword" name="password" type="password" minlength="6" autocomplete="current-password" />
+          <div class="button-row">
+            <button id="signInButton" class="primary-button" type="submit">Connexion</button>
+            <button id="signUpButton" class="ghost-button" type="button">Créer</button>
+            <button id="signOutButton" class="ghost-button hidden" type="button">Sortir</button>
+          </div>
+          <p id="authStatus" class="status-line" aria-live="polite"></p>
+        </form>
+      </section>
+    </aside>
+
+    <section class="main-workspace">
+      <header class="workspace-header">
+        <div>
+          <span class="section-kicker">Bibliothèque vidéo</span>
+          <h1 id="viewTitle">Archive publique</h1>
+          <p id="viewSubtitle">Les vidéos visibles par tous restent ici. Les contenus privés vivent dans ton espace.</p>
+        </div>
+        <div class="workspace-metrics">
+          <span><strong id="publicCount">0</strong> publiques</span>
+          <span><strong id="privateCount">0</strong> privées</span>
+          <span><strong id="sharedCount">0</strong> partagées</span>
+        </div>
+      </header>
+
+      <section class="workspace-grid">
+        <section class="panel library-panel">
+          <div class="panel-toolbar">
+            <div class="field">
+              <label for="searchInput">Recherche</label>
+              <input id="searchInput" type="search" placeholder="Titre, description, auteur ou catégorie" autocomplete="off" />
+            </div>
+            <div class="field">
+              <label for="categoryFilter">Catégorie</label>
+              <select id="categoryFilter">
+                <option value="all">Toutes</option>
+                ${CATEGORIES.map((category) => `<option value="${category}">${category}</option>`).join('')}
+              </select>
+            </div>
+          </div>
+
+          <form id="uploadForm" class="upload-console">
+            <div class="upload-console__header">
+              <div>
+                <span class="section-kicker">Ajout</span>
+                <h2>Nouvelle vidéo</h2>
+              </div>
+              <div class="segmented-control" role="group" aria-label="Visibilité">
+                <label><input type="radio" name="visibility" value="public" checked /> Public</label>
+                <label><input type="radio" name="visibility" value="private" /> Privé</label>
+              </div>
+            </div>
+            <div class="upload-grid">
+              <input id="videoTitle" name="title" type="text" maxlength="120" required placeholder="Titre" />
+              <select id="videoCategory" name="category" required>
+                ${CATEGORIES.map((category) => `<option value="${category}">${category}</option>`).join('')}
+              </select>
+              <input id="videoFile" name="file" type="file" accept="video/mp4,video/webm,video/quicktime,video/x-m4v" required />
+            </div>
+            <textarea id="videoDescription" name="description" rows="3" maxlength="500" placeholder="Description"></textarea>
+            <button id="uploadButton" class="primary-button" type="submit">Ajouter à la bibliothèque</button>
+            <p id="formStatus" class="status-line" aria-live="polite"></p>
+          </form>
+
+          <div id="videoList" class="video-list"></div>
+        </section>
+
+        <aside class="detail-stack">
+          <article class="panel player-panel" id="player">
+            <div class="panel-heading">
+              <span class="section-kicker">Lecture</span>
+              <h2 id="playerTitle">Aucune sélection</h2>
+              <p id="playerMeta">Choisis une vidéo dans une bibliothèque.</p>
+            </div>
+            <div class="player-frame" id="playerFrame">
+              <span>Le projecteur attend.</span>
+            </div>
+            <p id="playerDescription" class="muted-text"></p>
+          </article>
+
+          <article class="panel share-panel">
+            <div class="panel-heading">
+              <span class="section-kicker">Partage privé</span>
+              <h2>Partager avec un utilisateur</h2>
+              <p>Le partage concerne uniquement tes vidéos privées.</p>
+            </div>
+            <form id="shareForm" class="compact-form">
+              <select id="shareUserSelect" name="targetUser"></select>
+              <button class="ghost-button" type="submit">Partager la sélection</button>
+              <p id="shareStatus" class="status-line" aria-live="polite"></p>
+            </form>
+            <div id="shareList" class="share-list"></div>
+          </article>
+
+          <article class="panel messages-panel" id="messagesPanel">
+            <div class="panel-heading">
+              <span class="section-kicker">Interne</span>
+              <h2>Messagerie utilisateur</h2>
+              <p>Les messages internes demandent un compte.</p>
+            </div>
+            <form id="threadForm" class="message-tools">
+              <select id="threadUserSelect" name="targetUser"></select>
+              <button class="ghost-button" type="submit">Ouvrir</button>
+            </form>
+            <div id="threadList" class="thread-list"></div>
+            <div id="messageList" class="message-list"></div>
+            <form id="directMessageForm" class="message-form">
+              <input id="directMessageInput" name="message" maxlength="1200" autocomplete="off" placeholder="Message privé..." />
+              <button class="primary-button" type="submit">Envoyer</button>
+            </form>
+          </article>
+        </aside>
+      </section>
+    </section>
+  </main>
+`
+
+const viewButtons = document.querySelectorAll<HTMLButtonElement>('[data-view]')
+const viewTitle = document.querySelector<HTMLHeadingElement>('#viewTitle')
+const viewSubtitle = document.querySelector<HTMLParagraphElement>('#viewSubtitle')
+const publicCount = document.querySelector<HTMLSpanElement>('#publicCount')
+const privateCount = document.querySelector<HTMLSpanElement>('#privateCount')
+const sharedCount = document.querySelector<HTMLSpanElement>('#sharedCount')
+const searchInput = document.querySelector<HTMLInputElement>('#searchInput')
+const categoryFilter = document.querySelector<HTMLSelectElement>('#categoryFilter')
+const videoList = document.querySelector<HTMLDivElement>('#videoList')
+const uploadForm = document.querySelector<HTMLFormElement>('#uploadForm')
+const uploadButton = document.querySelector<HTMLButtonElement>('#uploadButton')
+const formStatus = document.querySelector<HTMLParagraphElement>('#formStatus')
+const playerTitle = document.querySelector<HTMLHeadingElement>('#playerTitle')
+const playerMeta = document.querySelector<HTMLParagraphElement>('#playerMeta')
+const playerDescription = document.querySelector<HTMLParagraphElement>('#playerDescription')
+const playerFrame = document.querySelector<HTMLDivElement>('#playerFrame')
+const aliasForm = document.querySelector<HTMLFormElement>('#aliasForm')
+const anonymousAliasInput = document.querySelector<HTMLInputElement>('#anonymousAlias')
+const accountTitle = document.querySelector<HTMLHeadingElement>('#accountTitle')
+const accountSummary = document.querySelector<HTMLParagraphElement>('#accountSummary')
+const authForm = document.querySelector<HTMLFormElement>('#authForm')
+const displayNameInput = document.querySelector<HTMLInputElement>('#displayName')
+const authEmailInput = document.querySelector<HTMLInputElement>('#authEmail')
+const authPasswordInput = document.querySelector<HTMLInputElement>('#authPassword')
+const signUpButton = document.querySelector<HTMLButtonElement>('#signUpButton')
+const signOutButton = document.querySelector<HTMLButtonElement>('#signOutButton')
+const authStatus = document.querySelector<HTMLParagraphElement>('#authStatus')
+const shareForm = document.querySelector<HTMLFormElement>('#shareForm')
+const shareUserSelect = document.querySelector<HTMLSelectElement>('#shareUserSelect')
+const shareStatus = document.querySelector<HTMLParagraphElement>('#shareStatus')
+const shareList = document.querySelector<HTMLDivElement>('#shareList')
+const threadForm = document.querySelector<HTMLFormElement>('#threadForm')
+const threadUserSelect = document.querySelector<HTMLSelectElement>('#threadUserSelect')
+const threadList = document.querySelector<HTMLDivElement>('#threadList')
+const messageList = document.querySelector<HTMLDivElement>('#messageList')
+const directMessageForm = document.querySelector<HTMLFormElement>('#directMessageForm')
+const directMessageInput = document.querySelector<HTMLInputElement>('#directMessageInput')
+
+function setStatus(element: HTMLElement | null, message: string, tone: 'neutral' | 'success' | 'error' = 'neutral') {
+  if (!element) return
+  element.textContent = message
+  element.dataset.tone = tone
+}
+
+function renderShell() {
+  viewButtons.forEach((button) => {
+    button.classList.toggle('view-nav__item--active', button.dataset.view === activeView)
   })
+
+  const copy: Record<ViewKey, [string, string]> = {
+    public: ['Archive publique', 'Toutes les vidéos partagées avec la communauté.'],
+    private: ['Ma bibliothèque privée', 'Tes vidéos privées restent visibles seulement par toi et les utilisateurs invités.'],
+    shared: ['Partagés avec moi', 'Les vidéos privées auxquelles d’autres utilisateurs t’ont donné accès.'],
+    messages: ['Messagerie interne', 'Conversations privées entre comptes utilisateur.'],
+  }
+
+  if (viewTitle) viewTitle.textContent = copy[activeView][0]
+  if (viewSubtitle) viewSubtitle.textContent = copy[activeView][1]
+  if (publicCount) publicCount.textContent = String(publicVideos.length)
+  if (privateCount) privateCount.textContent = String(privateVideos.length)
+  if (sharedCount) sharedCount.textContent = String(sharedVideos.length)
 }
 
 function renderAccount() {
   if (anonymousAliasInput) anonymousAliasInput.value = getAnonymousAlias()
 
-  if (!accountSummary || !displayNameInput || !authEmailInput || !authPasswordInput || !signOutButton) return
+  if (!accountTitle || !accountSummary || !displayNameInput || !authEmailInput || !authPasswordInput || !signOutButton) return
 
-  if (session) {
-    accountSummary.textContent = `Connecté comme ${getAuthorAlias()}. Tu peux commenter, liker et écrire au salon avec ce compte.`
-    displayNameInput.value = displayName
-    authEmailInput.value = session.user.email ?? ''
-    authEmailInput.disabled = true
-    authPasswordInput.disabled = true
-    signOutButton.classList.remove('hidden')
-  } else {
-    accountSummary.textContent = `Présence anonyme active: ${getAnonymousAlias()}.`
+  if (!session) {
+    accountTitle.textContent = 'Présence anonyme'
+    accountSummary.textContent = 'Connecte-toi pour créer une bibliothèque privée, partager des vidéos et envoyer des messages.'
     displayNameInput.disabled = false
     authEmailInput.disabled = false
     authPasswordInput.disabled = false
     signOutButton.classList.add('hidden')
-  }
-}
-
-function renderPlayer() {
-  if (!playerTitle || !playerMeta || !playerFrame || !playerDescription || !selectedAuthor || !likeButton) return
-
-  const selected = getSelectedVideo()
-
-  if (!selected) {
-    playerTitle.textContent = 'Aucune sélection'
-    playerMeta.textContent = 'Choisis une vidéo dans l’archive pour lancer la lecture.'
-    playerDescription.textContent = ''
-    selectedAuthor.textContent = 'Publié par Anonyme'
-    likeButton.disabled = true
-    playerFrame.innerHTML = `
-      <div class="player-frame__empty">
-        <span>Le projecteur attend.</span>
-      </div>
-    `
     return
   }
 
-  playerTitle.textContent = selected.title
-  playerMeta.textContent = `${selected.category ?? 'Sans catégorie'} · ${formatDate(selected.created_at)}`
-  playerDescription.textContent = selected.description ?? ''
-  selectedAuthor.textContent = `Publié par ${selected.owner_alias}`
-  likeButton.disabled = false
-  playerFrame.innerHTML = ''
-
-  const video = document.createElement('video')
-  video.controls = true
-  video.playsInline = true
-  video.preload = 'metadata'
-  video.src = selected.public_url
-  video.className = 'player-frame__video'
-  playerFrame.append(video)
+  accountTitle.textContent = displayName || session.user.email || 'Compte'
+  accountSummary.textContent = 'Bibliothèque privée, partages ciblés et messagerie interne sont actifs.'
+  displayNameInput.value = displayName
+  authEmailInput.value = session.user.email ?? ''
+  authEmailInput.disabled = true
+  authPasswordInput.disabled = true
+  signOutButton.classList.remove('hidden')
 }
 
-function renderEngagement() {
-  const liked = likes.some((like) => like.identity_key === getIdentityKey())
-  if (likeButton) {
-    likeButton.classList.toggle('like-button--active', liked)
-    likeButton.disabled = !activeVideoId
-  }
-  if (likeCount) likeCount.textContent = String(likes.length)
-  if (heroLikeCount) heroLikeCount.textContent = String(likes.length)
-  if (commentCount) commentCount.textContent = String(comments.length)
+function renderProfileSelectors() {
+  const userId = currentUserId()
+  const candidates = profiles.filter((profile) => profile.user_id !== userId)
+  const options = candidates.length
+    ? candidates.map((profile) => `<option value="${profile.user_id}">${escapeHtml(profile.display_name)}</option>`).join('')
+    : '<option value="">Aucun autre utilisateur</option>'
 
-  if (!commentsList) return
-
-  if (!activeVideoId) {
-    commentsList.innerHTML = '<div class="empty-state"><p>Sélectionne une vidéo pour ouvrir les commentaires.</p></div>'
-    return
-  }
-
-  if (!comments.length) {
-    commentsList.innerHTML = '<div class="empty-state"><p>Aucun commentaire pour le moment.</p></div>'
-    return
-  }
-
-  commentsList.innerHTML = comments
-    .map(
-      (comment) => `
-        <article class="message-card">
-          <div class="message-card__meta">
-            <strong>${escapeHtml(comment.author_alias)}</strong>
-            <span>${formatDate(comment.created_at)}</span>
-          </div>
-          <p>${escapeHtml(comment.body)}</p>
-        </article>
-      `,
-    )
-    .join('')
+  if (shareUserSelect) shareUserSelect.innerHTML = options
+  if (threadUserSelect) threadUserSelect.innerHTML = options
 }
 
-function renderChat() {
-  if (chatCount) chatCount.textContent = String(chatMessages.length)
-  if (heroChatCount) heroChatCount.textContent = String(chatMessages.length)
-  if (!chatList) return
-
-  if (!chatMessages.length) {
-    chatList.innerHTML = '<div class="empty-state"><p>Le salon est calme pour le moment.</p></div>'
-    return
-  }
-
-  chatList.innerHTML = chatMessages
-    .map(
-      (message) => `
-        <article class="message-card">
-          <div class="message-card__meta">
-            <strong>${escapeHtml(message.author_alias)}</strong>
-            <span>${formatDate(message.created_at)}</span>
-          </div>
-          <p>${escapeHtml(message.body)}</p>
-        </article>
-      `,
-    )
-    .join('')
-}
-
-function renderList() {
+function renderVideos() {
+  renderShell()
   if (!videoList) return
 
-  const filtered = getFilteredVideos()
-  if (resultsCount) resultsCount.textContent = `${filtered.length} vidéo${filtered.length > 1 ? 's' : ''}`
-  if (heroCount) heroCount.textContent = String(videos.length)
-
-  if (!filtered.length) {
-    videoList.innerHTML = `
-      <div class="empty-state">
-        <h3>Aucun résultat</h3>
-        <p>Essaie une autre recherche, ou alimente l’archive avec une première séquence.</p>
-      </div>
-    `
+  if (activeView === 'messages') {
+    videoList.innerHTML = '<div class="empty-state"><h3>Messagerie ouverte</h3><p>Utilise le panneau de droite pour écrire à un utilisateur.</p></div>'
     return
   }
 
-  videoList.innerHTML = filtered
+  const search = searchInput?.value.trim().toLowerCase() ?? ''
+  const category = categoryFilter?.value ?? 'all'
+  const videos = getVisibleVideos().filter((video) => {
+    const haystack = `${video.title} ${video.description ?? ''} ${video.category ?? ''} ${video.owner_alias}`.toLowerCase()
+    return (category === 'all' || video.category === category) && haystack.includes(search)
+  })
+
+  if (!videos.length) {
+    videoList.innerHTML = '<div class="empty-state"><h3>Aucune vidéo</h3><p>Cette section est vide pour le moment.</p></div>'
+    return
+  }
+
+  videoList.innerHTML = videos
     .map((video) => {
-      const isActive = video.id === activeVideoId
+      const isSelected = video.id === selectedVideoId
+      const badge = video.visibility === 'private' ? 'Privé' : 'Public'
       return `
-        <button class="video-card ${isActive ? 'video-card--active' : ''}" data-video-id="${video.id}" type="button">
-          <span class="video-card__badge">${escapeHtml(video.category ?? 'Sans catégorie')}</span>
-          <h3>${escapeHtml(video.title)}</h3>
-          <p>${escapeHtml(video.description ?? 'Aucune description fournie.')}</p>
-          <div class="video-card__meta">
-            <span>${escapeHtml(video.owner_alias)}</span>
-            <span>${formatDate(video.created_at)}</span>
-          </div>
+        <button class="video-row ${isSelected ? 'video-row--active' : ''}" type="button" data-video-id="${video.id}">
+          <span class="video-row__badge">${badge}</span>
+          <span>
+            <strong>${escapeHtml(video.title)}</strong>
+            <small>${escapeHtml(video.category ?? 'Sans catégorie')} · ${escapeHtml(video.owner_alias)} · ${formatDate(video.created_at)}</small>
+          </span>
         </button>
       `
     })
     .join('')
 
-  videoList.querySelectorAll<HTMLButtonElement>('.video-card').forEach((button) => {
+  videoList.querySelectorAll<HTMLButtonElement>('[data-video-id]').forEach((button) => {
     button.addEventListener('click', async () => {
-      activeVideoId = button.dataset.videoId ?? null
-      renderPlayer()
-      renderList()
-      await loadEngagement()
-      document.querySelector('#player')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+      selectedVideoId = button.dataset.videoId ?? null
+      renderVideos()
+      await renderPlayer()
+      renderShares()
     })
   })
+}
+
+async function getPlaybackUrl(video: VideoItem) {
+  if (video.visibility === 'public') return video.public_url
+  const existing = signedUrls.get(video.id)
+  if (existing) return existing
+
+  const { data, error } = await supabase.storage
+    .from(video.storage_bucket || PRIVATE_BUCKET)
+    .createSignedUrl(video.storage_path, 60 * 60)
+
+  if (error) {
+    console.error(error)
+    return null
+  }
+
+  signedUrls.set(video.id, data.signedUrl)
+  return data.signedUrl
+}
+
+async function renderPlayer() {
+  const video = getSelectedVideo()
+  if (!playerTitle || !playerMeta || !playerDescription || !playerFrame) return
+
+  if (!video) {
+    playerTitle.textContent = 'Aucune sélection'
+    playerMeta.textContent = 'Choisis une vidéo dans une bibliothèque.'
+    playerDescription.textContent = ''
+    playerFrame.innerHTML = '<span>Le projecteur attend.</span>'
+    return
+  }
+
+  playerTitle.textContent = video.title
+  playerMeta.textContent = `${video.visibility === 'private' ? 'Privé' : 'Public'} · ${video.category ?? 'Sans catégorie'} · ${formatDate(video.created_at)}`
+  playerDescription.textContent = video.description ?? ''
+  playerFrame.innerHTML = '<span>Chargement de la vidéo...</span>'
+
+  const url = await getPlaybackUrl(video)
+  if (!url) {
+    playerFrame.innerHTML = '<span>Lecture indisponible pour cette vidéo.</span>'
+    return
+  }
+
+  playerFrame.innerHTML = ''
+  const element = document.createElement('video')
+  element.controls = true
+  element.playsInline = true
+  element.preload = 'metadata'
+  element.className = 'player-frame__video'
+  element.src = url
+  playerFrame.append(element)
+}
+
+function renderShares() {
+  if (!shareList) return
+  const video = getSelectedVideo()
+  const userId = currentUserId()
+
+  if (!video || video.owner_user_id !== userId || video.visibility !== 'private') {
+    shareList.innerHTML = '<p class="muted-text">Sélectionne une vidéo privée qui t’appartient.</p>'
+    return
+  }
+
+  const videoShares = shares.filter((share) => share.video_id === video.id)
+  shareList.innerHTML = videoShares.length
+    ? videoShares.map((share) => `<span class="share-chip">${escapeHtml(profileName(share.shared_with_user_id))}</span>`).join('')
+    : '<p class="muted-text">Pas encore partagée.</p>'
+}
+
+function renderThreads() {
+  if (!threadList || !messageList) return
+
+  if (!session) {
+    threadList.innerHTML = '<div class="empty-state"><p>Connecte-toi pour utiliser la messagerie interne.</p></div>'
+    messageList.innerHTML = ''
+    return
+  }
+
+  threadList.innerHTML = threads.length
+    ? threads.map((thread) => {
+        const other = otherThreadUser(thread)
+        return `
+          <button class="thread-item ${thread.id === selectedThreadId ? 'thread-item--active' : ''}" type="button" data-thread-id="${thread.id}">
+            ${escapeHtml(profileName(other))}
+          </button>
+        `
+      }).join('')
+    : '<div class="empty-state"><p>Aucune conversation.</p></div>'
+
+  threadList.querySelectorAll<HTMLButtonElement>('[data-thread-id]').forEach((button) => {
+    button.addEventListener('click', async () => {
+      selectedThreadId = button.dataset.threadId ?? null
+      await loadMessages()
+      renderThreads()
+    })
+  })
+
+  const visibleMessages = selectedThreadId ? messages.filter((message) => message.thread_id === selectedThreadId) : []
+  messageList.innerHTML = visibleMessages.length
+    ? visibleMessages.map((message) => {
+        const mine = message.sender_user_id === currentUserId()
+        return `
+          <article class="direct-message ${mine ? 'direct-message--mine' : ''}">
+            <strong>${escapeHtml(profileName(message.sender_user_id))}</strong>
+            <p>${escapeHtml(message.body)}</p>
+            <small>${formatDate(message.created_at)}</small>
+          </article>
+        `
+      }).join('')
+    : '<div class="empty-state"><p>Sélectionne ou ouvre une conversation.</p></div>'
+}
+
+async function loadProfiles() {
+  const { data, error } = await supabase
+    .from('profiles')
+    .select('user_id, display_name')
+    .order('display_name', { ascending: true })
+
+  if (error && !isMissingSchemaError(error)) console.error(error)
+  profiles = (data ?? []) as Profile[]
+  renderProfileSelectors()
 }
 
 async function loadProfile() {
@@ -623,107 +601,144 @@ async function loadProfile() {
   }
 
   if (!data) {
-    const { error: upsertError } = await supabase.from('profiles').insert({
+    await supabase.from('profiles').insert({
       user_id: session.user.id,
       display_name: fallbackName,
     })
-    if (upsertError) console.error(upsertError)
     displayName = fallbackName
-    renderAccount()
-    return
+  } else {
+    displayName = data.display_name
   }
 
-  displayName = data.display_name
+  await loadProfiles()
   renderAccount()
 }
 
-async function loadVideos() {
-  const legacyResponse = await supabase
-    .from('videos')
-    .select('id, title, description, category, public_url, storage_path, created_at')
-    .order('created_at', { ascending: false })
-
-  if (legacyResponse.error) {
-    console.error(legacyResponse.error)
-    if (videoList) {
-      videoList.innerHTML = `
-        <div class="empty-state empty-state--error">
-          <h3>Archive indisponible</h3>
-          <p>Impossible de charger les vidéos pour l’instant.</p>
-        </div>
-      `
-    }
-    return
+function normalizeVideo(item: Partial<VideoItem>): VideoItem {
+  return {
+    id: item.id ?? '',
+    title: item.title ?? '',
+    description: item.description ?? null,
+    category: item.category ?? null,
+    public_url: item.public_url ?? null,
+    storage_path: item.storage_path ?? '',
+    storage_bucket: item.storage_bucket ?? PUBLIC_BUCKET,
+    visibility: (item.visibility ?? 'public') as Visibility,
+    owner_user_id: item.owner_user_id ?? null,
+    owner_alias: item.owner_alias ?? 'Anonyme',
+    created_at: item.created_at ?? new Date().toISOString(),
   }
-
-  videos = normalizeLegacyVideos((legacyResponse.data ?? []) as LegacyVideoItem[])
-  if (!activeVideoId && videos.length) activeVideoId = videos[0].id
-  renderPlayer()
-  renderList()
-
-  const communityResponse = await supabase
-    .from('videos')
-    .select('id, title, description, category, public_url, storage_path, owner_user_id, owner_alias, created_at')
-    .order('created_at', { ascending: false })
-
-  if (!communityResponse.error) {
-    videos = (communityResponse.data ?? []) as VideoItem[]
-    renderPlayer()
-    renderList()
-  } else if (!isMissingSchemaError(communityResponse.error)) {
-    console.error(communityResponse.error)
-  } else {
-    console.warn('Community columns missing, using legacy video schema.', communityResponse.error)
-  }
-
-  await loadEngagement()
 }
 
-async function loadEngagement() {
-  if (!activeVideoId) {
-    comments = []
-    likes = []
-    renderEngagement()
+async function loadVideos() {
+  const publicResponse = await supabase
+    .from('videos')
+    .select('id, title, description, category, public_url, storage_path, storage_bucket, visibility, owner_user_id, owner_alias, created_at')
+    .eq('visibility', 'public')
+    .order('created_at', { ascending: false })
+
+  if (publicResponse.error) {
+    const fallback = await supabase
+      .from('videos')
+      .select('id, title, description, category, public_url, storage_path, created_at')
+      .order('created_at', { ascending: false })
+    if (fallback.error) console.error(fallback.error)
+    publicVideos = ((fallback.data ?? []) as Partial<VideoItem>[]).map(normalizeVideo)
+  } else {
+    publicVideos = ((publicResponse.data ?? []) as Partial<VideoItem>[]).map(normalizeVideo)
+  }
+
+  if (!session) {
+    privateVideos = []
+    sharedVideos = []
+    shares = []
+    if (!selectedVideoId && publicVideos.length) selectedVideoId = publicVideos[0].id
+    renderVideos()
+    await renderPlayer()
     return
   }
 
-  const [commentsResponse, likesResponse] = await Promise.all([
+  const userId = session.user.id
+  const [ownedResponse, sharesResponse] = await Promise.all([
     supabase
-      .from('video_comments')
-      .select('id, body, author_alias, created_at')
-      .eq('video_id', activeVideoId)
-      .order('created_at', { ascending: true }),
-    supabase.from('video_likes').select('id, identity_key').eq('video_id', activeVideoId),
+      .from('videos')
+      .select('id, title, description, category, public_url, storage_path, storage_bucket, visibility, owner_user_id, owner_alias, created_at')
+      .eq('owner_user_id', userId)
+      .order('created_at', { ascending: false }),
+    supabase
+      .from('video_shares')
+      .select('id, video_id, owner_user_id, shared_with_user_id, created_at')
+      .or(`owner_user_id.eq.${userId},shared_with_user_id.eq.${userId}`),
   ])
 
-  if (commentsResponse.error) console.error(commentsResponse.error)
-  if (likesResponse.error) console.error(likesResponse.error)
+  if (ownedResponse.error && !isMissingSchemaError(ownedResponse.error)) console.error(ownedResponse.error)
+  if (sharesResponse.error && !isMissingSchemaError(sharesResponse.error)) console.error(sharesResponse.error)
 
-  comments = commentsResponse.error && isMissingSchemaError(commentsResponse.error)
-    ? []
-    : (commentsResponse.data ?? []) as VideoComment[]
-  likes = likesResponse.error && isMissingSchemaError(likesResponse.error)
-    ? []
-    : (likesResponse.data ?? []) as VideoLike[]
-  renderEngagement()
+  privateVideos = ((ownedResponse.data ?? []) as Partial<VideoItem>[])
+    .map(normalizeVideo)
+    .filter((video) => video.visibility === 'private')
+  shares = (sharesResponse.data ?? []) as VideoShare[]
+
+  const sharedIds = shares
+    .filter((share) => share.shared_with_user_id === userId)
+    .map((share) => share.video_id)
+
+  if (sharedIds.length) {
+    const sharedResponse = await supabase
+      .from('videos')
+      .select('id, title, description, category, public_url, storage_path, storage_bucket, visibility, owner_user_id, owner_alias, created_at')
+      .in('id', sharedIds)
+      .order('created_at', { ascending: false })
+
+    if (sharedResponse.error && !isMissingSchemaError(sharedResponse.error)) console.error(sharedResponse.error)
+    sharedVideos = ((sharedResponse.data ?? []) as Partial<VideoItem>[]).map(normalizeVideo)
+  } else {
+    sharedVideos = []
+  }
+
+  if (!selectedVideoId && publicVideos.length) selectedVideoId = publicVideos[0].id
+  renderVideos()
+  await renderPlayer()
+  renderShares()
 }
 
-async function loadChat() {
-  const { data, error } = await supabase
-    .from('chat_messages')
-    .select('id, body, author_alias, created_at')
-    .order('created_at', { ascending: false })
-    .limit(60)
-
-  if (error) {
-    if (!isMissingSchemaError(error)) console.error(error)
-    chatMessages = []
-    renderChat()
+async function loadThreads() {
+  if (!session) {
+    threads = []
+    messages = []
+    renderThreads()
     return
   }
 
-  chatMessages = ((data ?? []) as ChatMessage[]).reverse()
-  renderChat()
+  const userId = session.user.id
+  const { data, error } = await supabase
+    .from('direct_threads')
+    .select('id, owner_user_id, participant_user_id, updated_at')
+    .or(`owner_user_id.eq.${userId},participant_user_id.eq.${userId}`)
+    .order('updated_at', { ascending: false })
+
+  if (error && !isMissingSchemaError(error)) console.error(error)
+  threads = (data ?? []) as DirectThread[]
+  if (!selectedThreadId && threads.length) selectedThreadId = threads[0].id
+  await loadMessages()
+  renderThreads()
+}
+
+async function loadMessages() {
+  if (!selectedThreadId) {
+    messages = []
+    renderThreads()
+    return
+  }
+
+  const { data, error } = await supabase
+    .from('direct_messages')
+    .select('id, thread_id, sender_user_id, body, created_at')
+    .eq('thread_id', selectedThreadId)
+    .order('created_at', { ascending: true })
+
+  if (error && !isMissingSchemaError(error)) console.error(error)
+  messages = (data ?? []) as DirectMessage[]
 }
 
 async function uploadVideo(form: HTMLFormElement) {
@@ -733,35 +748,42 @@ async function uploadVideo(form: HTMLFormElement) {
   const title = String(formData.get('title') ?? '').trim()
   const category = String(formData.get('category') ?? '').trim()
   const description = String(formData.get('description') ?? '').trim()
+  const visibility = String(formData.get('visibility') ?? 'public') as Visibility
   const file = formData.get('file')
 
   if (!title || !category || !(file instanceof File) || !file.size) {
-    setStatus('Complète le titre, la catégorie et le fichier vidéo.', 'error')
+    setStatus(formStatus, 'Complète le titre, la catégorie et le fichier vidéo.', 'error')
+    return
+  }
+
+  if (visibility === 'private' && !session) {
+    setStatus(formStatus, 'Connecte-toi pour ajouter une vidéo privée.', 'error')
     return
   }
 
   if (!ALLOWED_VIDEO_TYPES.includes(file.type)) {
-    setStatus('Format refusé. Utilise MP4, WebM, MOV ou M4V.', 'error')
+    setStatus(formStatus, 'Format refusé. Utilise MP4, WebM, MOV ou M4V.', 'error')
     return
   }
 
   if (file.size > MAX_VIDEO_SIZE) {
-    setStatus('Fichier trop lourd pour ce MVP. Vise 250 Mo maximum.', 'error')
+    setStatus(formStatus, 'Fichier trop lourd pour ce MVP. Vise 250 Mo maximum.', 'error')
     return
   }
 
   isUploading = true
   uploadButton.disabled = true
-  uploadButton.textContent = 'Publication en cours...'
-  setStatus('Envoi vers le stockage...')
+  uploadButton.textContent = 'Ajout en cours...'
+  setStatus(formStatus, 'Envoi vers le stockage...')
 
   const extension = file.name.split('.').pop()?.toLowerCase() || 'mp4'
   const fileName = `${Date.now()}-${slugify(title) || 'video'}.${extension}`
-  const ownerSegment = session?.user.id ? `users/${session.user.id}` : `anonymous/${anonymousId}`
+  const bucket = visibility === 'private' ? PRIVATE_BUCKET : PUBLIC_BUCKET
+  const ownerSegment = session?.user.id ?? `anonymous-${anonymousId}`
   const storagePath = `${ownerSegment}/${slugify(category) || 'autre'}/${fileName}`
 
   const { error: uploadError } = await supabase.storage
-    .from(BUCKET)
+    .from(bucket)
     .upload(storagePath, file, {
       cacheControl: '3600',
       contentType: file.type,
@@ -770,165 +792,169 @@ async function uploadVideo(form: HTMLFormElement) {
 
   if (uploadError) {
     console.error(uploadError)
-    setStatus(`Upload impossible: ${uploadError.message}`, 'error')
+    setStatus(formStatus, `Upload impossible: ${uploadError.message}`, 'error')
     isUploading = false
     uploadButton.disabled = false
-    uploadButton.textContent = 'Publier dans l’archive'
+    uploadButton.textContent = 'Ajouter à la bibliothèque'
     return
   }
 
-  const { data: publicUrlData } = supabase.storage.from(BUCKET).getPublicUrl(storagePath)
+  const publicUrl = visibility === 'public'
+    ? supabase.storage.from(bucket).getPublicUrl(storagePath).data.publicUrl
+    : null
 
-  const communityInsert = await supabase
+  const { data, error } = await supabase
     .from('videos')
     .insert({
       title,
       category,
       description: description || null,
       storage_path: storagePath,
-      public_url: publicUrlData.publicUrl,
+      storage_bucket: bucket,
+      public_url: publicUrl,
+      visibility,
       owner_user_id: session?.user.id ?? null,
       owner_alias: getAuthorAlias(),
     })
-    .select('id, title, description, category, public_url, storage_path, owner_user_id, owner_alias, created_at')
+    .select('id, title, description, category, public_url, storage_path, storage_bucket, visibility, owner_user_id, owner_alias, created_at')
     .single()
 
-  let inserted: VideoItem | null = null
-  let insertError = communityInsert.error
+  if (error) {
+    console.error(error)
+    setStatus(formStatus, `Métadonnées non enregistrées: ${error.message}`, 'error')
+    isUploading = false
+    uploadButton.disabled = false
+    uploadButton.textContent = 'Ajouter à la bibliothèque'
+    return
+  }
 
-  if (communityInsert.error && isMissingSchemaError(communityInsert.error)) {
-    console.warn('Community columns missing, inserting video with legacy schema.', communityInsert.error)
-    const legacyInsert = await supabase
-      .from('videos')
-      .insert({
-        title,
-        category,
-        description: description || null,
-        storage_path: storagePath,
-        public_url: publicUrlData.publicUrl,
-      })
-      .select('id, title, description, category, public_url, storage_path, created_at')
-      .single()
-
-    insertError = legacyInsert.error
-    inserted = legacyInsert.data
-      ? normalizeLegacyVideos([legacyInsert.data as LegacyVideoItem])[0]
-      : null
+  const inserted = normalizeVideo(data as Partial<VideoItem>)
+  selectedVideoId = inserted.id
+  if (inserted.visibility === 'private') {
+    activeView = 'private'
+    privateVideos = [inserted, ...privateVideos]
   } else {
-    inserted = communityInsert.data as VideoItem | null
+    activeView = 'public'
+    publicVideos = [inserted, ...publicVideos]
   }
 
-  if (insertError) {
-    console.error(insertError)
-    setStatus(`Métadonnées non enregistrées: ${insertError.message}`, 'error')
-    isUploading = false
-    uploadButton.disabled = false
-    uploadButton.textContent = 'Publier dans l’archive'
-    return
-  }
-
-  if (!inserted) {
-    setStatus('Métadonnées non enregistrées: réponse vide de Supabase.', 'error')
-    isUploading = false
-    uploadButton.disabled = false
-    uploadButton.textContent = 'Publier dans l’archive'
-    return
-  }
-
-  setStatus('Vidéo publiée dans l’archive.', 'success')
   form.reset()
-  videos = [inserted, ...videos]
-  activeVideoId = inserted.id
-  comments = []
-  likes = []
-  renderPlayer()
-  renderList()
-  renderEngagement()
+  setStatus(formStatus, 'Vidéo ajoutée.', 'success')
   isUploading = false
   uploadButton.disabled = false
-  uploadButton.textContent = 'Publier dans l’archive'
+  uploadButton.textContent = 'Ajouter à la bibliothèque'
+  renderVideos()
+  await renderPlayer()
 }
 
-async function toggleLike() {
-  if (!activeVideoId) return
+async function shareSelectedVideo(form: HTMLFormElement) {
+  const video = getSelectedVideo()
+  const target = String(new FormData(form).get('targetUser') ?? '')
+  const userId = currentUserId()
 
-  const identityKey = getIdentityKey()
-  const existing = likes.find((like) => like.identity_key === identityKey)
-
-  if (existing) {
-    const { error } = await supabase
-      .from('video_likes')
-      .delete()
-      .eq('video_id', activeVideoId)
-      .eq('identity_key', identityKey)
-    if (error) console.error(error)
-  } else {
-    const { error } = await supabase.from('video_likes').insert({
-      video_id: activeVideoId,
-      author_user_id: session?.user.id ?? null,
-      author_alias: getAuthorAlias(),
-      identity_key: identityKey,
-    })
-    if (error) console.error(error)
+  if (!session || !userId) {
+    setStatus(shareStatus, 'Connecte-toi pour partager une vidéo.', 'error')
+    return
   }
 
-  await loadEngagement()
+  if (!video || video.owner_user_id !== userId || video.visibility !== 'private') {
+    setStatus(shareStatus, 'Sélectionne une vidéo privée qui t’appartient.', 'error')
+    return
+  }
+
+  if (!target) {
+    setStatus(shareStatus, 'Choisis un utilisateur.', 'error')
+    return
+  }
+
+  const { data, error } = await supabase
+    .from('video_shares')
+    .insert({
+      video_id: video.id,
+      owner_user_id: userId,
+      shared_with_user_id: target,
+    })
+    .select('id, video_id, owner_user_id, shared_with_user_id, created_at')
+    .single()
+
+  if (error) {
+    setStatus(shareStatus, error.message, 'error')
+    return
+  }
+
+  shares = [data as VideoShare, ...shares]
+  setStatus(shareStatus, 'Vidéo partagée.', 'success')
+  renderShares()
 }
 
-async function submitComment(form: HTMLFormElement) {
-  if (!activeVideoId || !commentInput) return
+async function openThread(form: HTMLFormElement) {
+  if (!session) return
+  const target = String(new FormData(form).get('targetUser') ?? '')
+  const userId = session.user.id
+  if (!target || target === userId) return
 
-  const body = String(new FormData(form).get('comment') ?? '').trim()
-  if (!body) return
-
-  const { error } = await supabase.from('video_comments').insert({
-    video_id: activeVideoId,
-    body,
-    author_user_id: session?.user.id ?? null,
-    author_alias: getAuthorAlias(),
-    identity_key: getIdentityKey(),
+  const existing = threads.find((thread) => {
+    return (thread.owner_user_id === userId && thread.participant_user_id === target)
+      || (thread.owner_user_id === target && thread.participant_user_id === userId)
   })
+
+  if (existing) {
+    selectedThreadId = existing.id
+    await loadMessages()
+    renderThreads()
+    return
+  }
+
+  const { data, error } = await supabase
+    .from('direct_threads')
+    .insert({ owner_user_id: userId, participant_user_id: target })
+    .select('id, owner_user_id, participant_user_id, updated_at')
+    .single()
 
   if (error) {
     console.error(error)
     return
   }
 
-  commentInput.value = ''
-  await loadEngagement()
+  threads = [data as DirectThread, ...threads]
+  selectedThreadId = (data as DirectThread).id
+  messages = []
+  renderThreads()
 }
 
-async function submitChatMessage(form: HTMLFormElement) {
-  if (!chatInput) return
-
+async function sendDirectMessage(form: HTMLFormElement) {
+  if (!session || !selectedThreadId || !directMessageInput) return
   const body = String(new FormData(form).get('message') ?? '').trim()
   if (!body) return
 
-  const { error } = await supabase.from('chat_messages').insert({
-    body,
-    author_user_id: session?.user.id ?? null,
-    author_alias: getAuthorAlias(),
-    identity_key: getIdentityKey(),
-  })
+  const { data, error } = await supabase
+    .from('direct_messages')
+    .insert({
+      thread_id: selectedThreadId,
+      sender_user_id: session.user.id,
+      body,
+    })
+    .select('id, thread_id, sender_user_id, body, created_at')
+    .single()
 
   if (error) {
     console.error(error)
     return
   }
 
-  chatInput.value = ''
-  await loadChat()
+  messages = [...messages, data as DirectMessage]
+  directMessageInput.value = ''
+  renderThreads()
 }
 
 async function handleAuth(mode: 'signin' | 'signup') {
   if (!authEmailInput || !authPasswordInput || !displayNameInput) return
-
   const email = authEmailInput.value.trim()
   const password = authPasswordInput.value
   const name = clampName(displayNameInput.value || getAnonymousAlias())
 
   if (!email || !password) {
-    setAuthStatus('Renseigne email et mot de passe.', 'error')
+    setStatus(authStatus, 'Renseigne email et mot de passe.', 'error')
     return
   }
 
@@ -938,63 +964,51 @@ async function handleAuth(mode: 'signin' | 'signup') {
       password,
       options: { data: { display_name: name } },
     })
+
     if (error) {
-      setAuthStatus(error.message, 'error')
+      setStatus(authStatus, error.message, 'error')
       return
     }
 
     if (data.user) {
       await supabase.from('profiles').upsert({ user_id: data.user.id, display_name: name })
     }
-    setAuthStatus('Compte créé. Vérifie ton email si Supabase le demande.', 'success')
+    setStatus(authStatus, 'Compte créé. Vérifie ton email si Supabase le demande.', 'success')
     return
   }
 
   const { error } = await supabase.auth.signInWithPassword({ email, password })
   if (error) {
-    setAuthStatus(error.message, 'error')
+    setStatus(authStatus, error.message, 'error')
     return
   }
 
-  setAuthStatus('Connexion ouverte.', 'success')
+  setStatus(authStatus, 'Connexion ouverte.', 'success')
 }
 
 function subscribeRealtime() {
-  communityChannel?.unsubscribe()
-
-  communityChannel = supabase
-    .channel('gothicanal-community')
-    .on('postgres_changes', { event: '*', schema: 'public', table: 'video_comments' }, () => {
-      loadEngagement()
+  realtimeChannel?.unsubscribe()
+  realtimeChannel = supabase
+    .channel('gothicanal-private-library')
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'video_shares' }, () => {
+      loadVideos()
     })
-    .on('postgres_changes', { event: '*', schema: 'public', table: 'video_likes' }, () => {
-      loadEngagement()
-    })
-    .on('postgres_changes', { event: '*', schema: 'public', table: 'chat_messages' }, () => {
-      loadChat()
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'direct_messages' }, () => {
+      loadMessages().then(renderThreads)
     })
     .subscribe()
 }
 
-searchInput?.addEventListener('input', (event) => {
-  currentSearch = (event.target as HTMLInputElement).value
-  renderList()
+viewButtons.forEach((button) => {
+  button.addEventListener('click', () => {
+    activeView = (button.dataset.view ?? 'public') as ViewKey
+    renderVideos()
+    renderThreads()
+  })
 })
 
-categoryFilter?.addEventListener('change', (event) => {
-  currentCategory = (event.target as HTMLSelectElement).value
-  renderList()
-})
-
-refreshButton?.addEventListener('click', () => {
-  loadVideos()
-  loadChat()
-})
-
-uploadForm?.addEventListener('submit', async (event) => {
-  event.preventDefault()
-  await uploadVideo(uploadForm)
-})
+searchInput?.addEventListener('input', renderVideos)
+categoryFilter?.addEventListener('change', renderVideos)
 
 aliasForm?.addEventListener('submit', (event) => {
   event.preventDefault()
@@ -1014,55 +1028,48 @@ signUpButton?.addEventListener('click', () => {
 
 signOutButton?.addEventListener('click', async () => {
   await supabase.auth.signOut()
-  setAuthStatus('Session fermée. Retour en présence anonyme.', 'success')
+  setStatus(authStatus, 'Session fermée. Retour en présence anonyme.', 'success')
 })
 
-likeButton?.addEventListener('click', () => {
-  toggleLike()
-})
-
-commentForm?.addEventListener('submit', async (event) => {
+uploadForm?.addEventListener('submit', async (event) => {
   event.preventDefault()
-  await submitComment(commentForm)
+  await uploadVideo(uploadForm)
 })
 
-chatForm?.addEventListener('submit', async (event) => {
+shareForm?.addEventListener('submit', async (event) => {
   event.preventDefault()
-  await submitChatMessage(chatForm)
+  await shareSelectedVideo(shareForm)
+})
+
+threadForm?.addEventListener('submit', async (event) => {
+  event.preventDefault()
+  await openThread(threadForm)
+})
+
+directMessageForm?.addEventListener('submit', async (event) => {
+  event.preventDefault()
+  await sendDirectMessage(directMessageForm)
 })
 
 supabase.auth.onAuthStateChange(async (_event, nextSession) => {
   session = nextSession
   await loadProfile()
-  renderEngagement()
+  await loadVideos()
+  await loadThreads()
 })
 
 async function init() {
-  cleanBrowserCaches().catch((error: unknown) => {
-    console.warn('Cache cleanup skipped.', error)
-  })
-  subscribeRealtime()
+  renderShell()
   renderAccount()
+  renderVideos()
+  renderThreads()
+  subscribeRealtime()
 
-  loadVideos().catch((error: unknown) => {
-    console.error('Video loading failed.', error)
-  })
-
-  loadChat().catch((error: unknown) => {
-    console.error('Chat loading failed.', error)
-  })
-
-  supabase.auth
-    .getSession()
-    .then(async ({ data }) => {
-      session = data.session
-      await loadProfile()
-      renderEngagement()
-    })
-    .catch((error: unknown) => {
-      console.warn('Auth session loading skipped.', error)
-      renderAccount()
-    })
+  const { data } = await supabase.auth.getSession()
+  session = data.session
+  await loadProfile()
+  await loadVideos()
+  await loadThreads()
 }
 
 init()
