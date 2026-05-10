@@ -46,6 +46,7 @@ const MAX_VIDEO_SIZE = 250 * 1024 * 1024
 const ALLOWED_VIDEO_TYPES = ['video/mp4', 'video/webm', 'video/quicktime', 'video/x-m4v']
 const ANON_ID_KEY = 'gothicanal:anonymous-id'
 const ANON_ALIAS_KEY = 'gothicanal:anonymous-alias'
+const CACHE_CLEAN_VERSION = 'gothicanal-cache-clean-2026-05-10-v1'
 
 let videos: VideoItem[] = []
 let comments: VideoComment[] = []
@@ -61,6 +62,30 @@ let communityChannel: ReturnType<typeof supabase.channel> | null = null
 
 const app = document.querySelector<HTMLDivElement>('#app')
 if (!app) throw new Error('App root not found')
+
+async function cleanBrowserCaches() {
+  const tasks: Promise<unknown>[] = []
+
+  if ('caches' in window) {
+    tasks.push(
+      caches.keys().then((keys) => Promise.all(keys.map((key) => caches.delete(key)))),
+    )
+  }
+
+  if ('serviceWorker' in navigator) {
+    tasks.push(
+      navigator.serviceWorker
+        .getRegistrations()
+        .then((registrations) => Promise.all(registrations.map((registration) => registration.unregister()))),
+    )
+  }
+
+  const results = await Promise.allSettled(tasks)
+  const failed = results.filter((result) => result.status === 'rejected')
+  if (failed.length) console.warn('Cache cleanup skipped partially.', failed)
+
+  sessionStorage.setItem('gothicanal:last-cache-clean', CACHE_CLEAN_VERSION)
+}
 
 function getOrCreateAnonymousId() {
   const existing = localStorage.getItem(ANON_ID_KEY)
@@ -1013,6 +1038,7 @@ supabase.auth.onAuthStateChange(async (_event, nextSession) => {
 })
 
 async function init() {
+  await cleanBrowserCaches()
   const { data } = await supabase.auth.getSession()
   session = data.session
   subscribeRealtime()
