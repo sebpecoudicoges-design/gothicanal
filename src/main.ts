@@ -1041,12 +1041,28 @@ async function init() {
   cleanBrowserCaches().catch((error: unknown) => {
     console.warn('Cache cleanup skipped.', error)
   })
-  const { data } = await supabase.auth.getSession()
-  session = data.session
   subscribeRealtime()
-  await loadProfile()
-  await loadVideos()
-  await loadChat()
+  renderAccount()
+
+  loadVideos().catch((error: unknown) => {
+    console.error('Video loading failed.', error)
+  })
+
+  loadChat().catch((error: unknown) => {
+    console.error('Chat loading failed.', error)
+  })
+
+  supabase.auth
+    .getSession()
+    .then(async ({ data }) => {
+      session = data.session
+      await loadProfile()
+      renderEngagement()
+    })
+    .catch((error: unknown) => {
+      console.warn('Auth session loading skipped.', error)
+      renderAccount()
+    })
 }
 
 init()
