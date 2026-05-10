@@ -4,6 +4,7 @@ import type { Session } from '@supabase/supabase-js'
 
 type Visibility = 'public' | 'private'
 type ViewKey = 'public' | 'private' | 'shared' | 'messages'
+type MemberPanelMode = 'signin' | 'member'
 
 type VideoItem = {
   id: string
@@ -66,6 +67,8 @@ let activeView: ViewKey = 'public'
 let selectedVideoId: string | null = null
 let selectedThreadId: string | null = null
 let isUploading = false
+let memberPanelMode: MemberPanelMode = 'signin'
+let isMessagePopupOpen = false
 
 let publicVideos: VideoItem[] = []
 let privateVideos: VideoItem[] = []
@@ -174,11 +177,14 @@ app.innerHTML = `
         <button class="view-nav__item view-nav__item--active" type="button" data-view="public">Archive publique</button>
         <button class="view-nav__item" type="button" data-view="private">Ma bibliothèque</button>
         <button class="view-nav__item" type="button" data-view="shared">Partagés avec moi</button>
-        <button class="view-nav__item" type="button" data-view="messages">Messagerie</button>
+        <button class="view-nav__item" type="button" id="openMessagesButton">Messagerie</button>
       </nav>
 
       <section class="account-card" id="account">
-        <span class="section-kicker">Compte</span>
+        <div class="account-card__top">
+          <span class="section-kicker">Espace membre</span>
+          <button id="memberPanelToggle" class="ghost-button ghost-button--compact" type="button">Connexion</button>
+        </div>
         <h2 id="accountTitle">Présence anonyme</h2>
         <p id="accountSummary">Connecte-toi pour créer une bibliothèque privée et partager tes vidéos.</p>
 
@@ -190,7 +196,7 @@ app.innerHTML = `
           </div>
         </form>
 
-        <form id="authForm" class="auth-form">
+        <form id="authForm" class="auth-form" data-member-panel="signin">
           <label for="displayName">Nom de compte</label>
           <input id="displayName" name="displayName" type="text" maxlength="40" minlength="2" placeholder="Ex. Sélène" />
           <label for="authEmail">Email</label>
@@ -203,6 +209,22 @@ app.innerHTML = `
             <button id="signOutButton" class="ghost-button hidden" type="button">Sortir</button>
           </div>
           <p id="authStatus" class="status-line" aria-live="polite"></p>
+        </form>
+
+        <form id="memberForm" class="auth-form hidden" data-member-panel="member">
+          <label for="memberDisplayName">Nom public</label>
+          <input id="memberDisplayName" name="displayName" type="text" maxlength="40" minlength="2" />
+          <label for="memberEmail">Email du compte</label>
+          <input id="memberEmail" type="email" disabled />
+          <button id="updateProfileButton" class="primary-button" type="submit">Mettre à jour le profil</button>
+          <p id="memberStatus" class="status-line" aria-live="polite"></p>
+        </form>
+
+        <form id="passwordForm" class="auth-form hidden" data-member-panel="member">
+          <label for="newPassword">Nouveau mot de passe</label>
+          <input id="newPassword" name="password" type="password" minlength="6" autocomplete="new-password" />
+          <button class="ghost-button" type="submit">Changer le mot de passe</button>
+          <p id="passwordStatus" class="status-line" aria-live="polite"></p>
         </form>
       </section>
     </aside>
@@ -290,25 +312,29 @@ app.innerHTML = `
             <div id="shareList" class="share-list"></div>
           </article>
 
-          <article class="panel messages-panel" id="messagesPanel">
-            <div class="panel-heading">
-              <span class="section-kicker">Interne</span>
-              <h2>Messagerie utilisateur</h2>
-              <p>Les messages internes demandent un compte.</p>
-            </div>
-            <form id="threadForm" class="message-tools">
-              <select id="threadUserSelect" name="targetUser"></select>
-              <button class="ghost-button" type="submit">Ouvrir</button>
-            </form>
-            <div id="threadList" class="thread-list"></div>
-            <div id="messageList" class="message-list"></div>
-            <form id="directMessageForm" class="message-form">
-              <input id="directMessageInput" name="message" maxlength="1200" autocomplete="off" placeholder="Message privé..." />
-              <button class="primary-button" type="submit">Envoyer</button>
-            </form>
-          </article>
         </aside>
       </section>
+    </section>
+
+    <button id="messageFab" class="message-fab" type="button">Messages</button>
+    <section id="messagePopup" class="message-popup hidden" aria-label="Messagerie interne">
+      <header class="message-popup__header">
+        <div>
+          <span class="section-kicker">Interne</span>
+          <h2>Messagerie</h2>
+        </div>
+        <button id="closeMessagesButton" class="icon-button" type="button" title="Fermer">×</button>
+      </header>
+      <form id="threadForm" class="message-tools">
+        <select id="threadUserSelect" name="targetUser"></select>
+        <button class="ghost-button" type="submit">Ouvrir</button>
+      </form>
+      <div id="threadList" class="thread-list"></div>
+      <div id="messageList" class="message-list"></div>
+      <form id="directMessageForm" class="message-form">
+        <input id="directMessageInput" name="message" maxlength="1200" autocomplete="off" placeholder="Message privé..." />
+        <button class="primary-button" type="submit">Envoyer</button>
+      </form>
     </section>
   </main>
 `
@@ -333,6 +359,7 @@ const aliasForm = document.querySelector<HTMLFormElement>('#aliasForm')
 const anonymousAliasInput = document.querySelector<HTMLInputElement>('#anonymousAlias')
 const accountTitle = document.querySelector<HTMLHeadingElement>('#accountTitle')
 const accountSummary = document.querySelector<HTMLParagraphElement>('#accountSummary')
+const memberPanelToggle = document.querySelector<HTMLButtonElement>('#memberPanelToggle')
 const authForm = document.querySelector<HTMLFormElement>('#authForm')
 const displayNameInput = document.querySelector<HTMLInputElement>('#displayName')
 const authEmailInput = document.querySelector<HTMLInputElement>('#authEmail')
@@ -340,6 +367,13 @@ const authPasswordInput = document.querySelector<HTMLInputElement>('#authPasswor
 const signUpButton = document.querySelector<HTMLButtonElement>('#signUpButton')
 const signOutButton = document.querySelector<HTMLButtonElement>('#signOutButton')
 const authStatus = document.querySelector<HTMLParagraphElement>('#authStatus')
+const memberForm = document.querySelector<HTMLFormElement>('#memberForm')
+const memberDisplayNameInput = document.querySelector<HTMLInputElement>('#memberDisplayName')
+const memberEmailInput = document.querySelector<HTMLInputElement>('#memberEmail')
+const memberStatus = document.querySelector<HTMLParagraphElement>('#memberStatus')
+const passwordForm = document.querySelector<HTMLFormElement>('#passwordForm')
+const newPasswordInput = document.querySelector<HTMLInputElement>('#newPassword')
+const passwordStatus = document.querySelector<HTMLParagraphElement>('#passwordStatus')
 const shareForm = document.querySelector<HTMLFormElement>('#shareForm')
 const shareUserSelect = document.querySelector<HTMLSelectElement>('#shareUserSelect')
 const shareStatus = document.querySelector<HTMLParagraphElement>('#shareStatus')
@@ -350,6 +384,10 @@ const threadList = document.querySelector<HTMLDivElement>('#threadList')
 const messageList = document.querySelector<HTMLDivElement>('#messageList')
 const directMessageForm = document.querySelector<HTMLFormElement>('#directMessageForm')
 const directMessageInput = document.querySelector<HTMLInputElement>('#directMessageInput')
+const messageFab = document.querySelector<HTMLButtonElement>('#messageFab')
+const messagePopup = document.querySelector<HTMLElement>('#messagePopup')
+const openMessagesButton = document.querySelector<HTMLButtonElement>('#openMessagesButton')
+const closeMessagesButton = document.querySelector<HTMLButtonElement>('#closeMessagesButton')
 
 function setStatus(element: HTMLElement | null, message: string, tone: 'neutral' | 'success' | 'error' = 'neutral') {
   if (!element) return
@@ -382,15 +420,21 @@ function renderAccount() {
   if (!accountTitle || !accountSummary || !displayNameInput || !authEmailInput || !authPasswordInput || !signOutButton) return
 
   if (!session) {
+    memberPanelMode = 'signin'
     accountTitle.textContent = 'Présence anonyme'
     accountSummary.textContent = 'Connecte-toi pour créer une bibliothèque privée, partager des vidéos et envoyer des messages.'
     displayNameInput.disabled = false
     authEmailInput.disabled = false
     authPasswordInput.disabled = false
     signOutButton.classList.add('hidden')
+    if (memberPanelToggle) memberPanelToggle.textContent = 'Connexion'
+    if (authForm) authForm.classList.remove('hidden')
+    if (memberForm) memberForm.classList.add('hidden')
+    if (passwordForm) passwordForm.classList.add('hidden')
     return
   }
 
+  if (memberPanelMode === 'signin') memberPanelMode = 'member'
   accountTitle.textContent = displayName || session.user.email || 'Compte'
   accountSummary.textContent = 'Bibliothèque privée, partages ciblés et messagerie interne sont actifs.'
   displayNameInput.value = displayName
@@ -398,6 +442,17 @@ function renderAccount() {
   authEmailInput.disabled = true
   authPasswordInput.disabled = true
   signOutButton.classList.remove('hidden')
+  if (memberPanelToggle) memberPanelToggle.textContent = memberPanelMode === 'member' ? 'Masquer' : 'Espace'
+  if (memberDisplayNameInput) memberDisplayNameInput.value = displayName
+  if (memberEmailInput) memberEmailInput.value = session.user.email ?? ''
+  if (authForm) authForm.classList.toggle('hidden', memberPanelMode === 'member')
+  if (memberForm) memberForm.classList.toggle('hidden', memberPanelMode !== 'member')
+  if (passwordForm) passwordForm.classList.toggle('hidden', memberPanelMode !== 'member')
+}
+
+function renderMessagePopup() {
+  messagePopup?.classList.toggle('hidden', !isMessagePopupOpen)
+  messageFab?.classList.toggle('hidden', isMessagePopupOpen)
 }
 
 function renderProfileSelectors() {
@@ -531,6 +586,7 @@ function renderThreads() {
   if (!session) {
     threadList.innerHTML = '<div class="empty-state"><p>Connecte-toi pour utiliser la messagerie interne.</p></div>'
     messageList.innerHTML = ''
+    renderMessagePopup()
     return
   }
 
@@ -566,6 +622,7 @@ function renderThreads() {
         `
       }).join('')
     : '<div class="empty-state"><p>Sélectionne ou ouvre une conversation.</p></div>'
+  renderMessagePopup()
 }
 
 async function loadProfiles() {
@@ -612,6 +669,50 @@ async function loadProfile() {
 
   await loadProfiles()
   renderAccount()
+}
+
+async function updateMemberProfile(form: HTMLFormElement) {
+  if (!session || !memberDisplayNameInput) return
+  const name = clampName(String(new FormData(form).get('displayName') ?? ''))
+
+  const { error } = await supabase
+    .from('profiles')
+    .upsert({
+      user_id: session.user.id,
+      display_name: name,
+      updated_at: new Date().toISOString(),
+    })
+
+  if (error) {
+    setStatus(memberStatus, error.message, 'error')
+    return
+  }
+
+  displayName = name
+  setStatus(memberStatus, 'Profil mis à jour.', 'success')
+  await loadProfiles()
+  renderAccount()
+  renderVideos()
+  renderThreads()
+}
+
+async function updatePassword(form: HTMLFormElement) {
+  if (!session || !newPasswordInput) return
+  const password = String(new FormData(form).get('password') ?? '')
+
+  if (password.length < 6) {
+    setStatus(passwordStatus, 'Le mot de passe doit contenir au moins 6 caractères.', 'error')
+    return
+  }
+
+  const { error } = await supabase.auth.updateUser({ password })
+  if (error) {
+    setStatus(passwordStatus, error.message, 'error')
+    return
+  }
+
+  newPasswordInput.value = ''
+  setStatus(passwordStatus, 'Mot de passe mis à jour.', 'success')
 }
 
 function normalizeVideo(item: Partial<VideoItem>): VideoItem {
@@ -1007,6 +1108,30 @@ viewButtons.forEach((button) => {
   })
 })
 
+memberPanelToggle?.addEventListener('click', () => {
+  if (!session) {
+    memberPanelMode = 'signin'
+  } else {
+    memberPanelMode = memberPanelMode === 'member' ? 'signin' : 'member'
+  }
+  renderAccount()
+})
+
+openMessagesButton?.addEventListener('click', () => {
+  isMessagePopupOpen = true
+  renderMessagePopup()
+})
+
+messageFab?.addEventListener('click', () => {
+  isMessagePopupOpen = true
+  renderMessagePopup()
+})
+
+closeMessagesButton?.addEventListener('click', () => {
+  isMessagePopupOpen = false
+  renderMessagePopup()
+})
+
 searchInput?.addEventListener('input', renderVideos)
 categoryFilter?.addEventListener('change', renderVideos)
 
@@ -1029,6 +1154,16 @@ signUpButton?.addEventListener('click', () => {
 signOutButton?.addEventListener('click', async () => {
   await supabase.auth.signOut()
   setStatus(authStatus, 'Session fermée. Retour en présence anonyme.', 'success')
+})
+
+memberForm?.addEventListener('submit', async (event) => {
+  event.preventDefault()
+  await updateMemberProfile(memberForm)
+})
+
+passwordForm?.addEventListener('submit', async (event) => {
+  event.preventDefault()
+  await updatePassword(passwordForm)
 })
 
 uploadForm?.addEventListener('submit', async (event) => {
